@@ -1,0 +1,280 @@
+import React, { useState, useEffect } from 'react';
+import { motion } from 'motion/react';
+import { Calendar, ChevronRight, Clock, Info, Search, TrendingUp } from 'lucide-react';
+import { STOCK_NAMES } from '../constants';
+
+interface EarningsData {
+  symbol: string;
+  name: string;
+  earningsDate: string;
+  exDividendDate: string | null;
+  summary?: {
+    epsEstimate: number | null;
+    revenueEstimate: number | null;
+    epsActual: number | null;
+    revenueActual: number | null;
+    lastQuarterLabel: string | null;
+    prevEpsActual: number | null;
+    prevRevenueActual: number | null;
+    margin: number | null;
+    growth: number | null;
+    epsTTM: number | null;
+  };
+}
+
+export default function EarningsTracker({ onSelectStock }: { onSelectStock?: (symbol: string) => void }) {
+  const [data, setData] = useState<EarningsData[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searching, setSearching] = useState(false);
+  const [expandedSymbol, setExpandedSymbol] = useState<string | null>(null);
+
+  useEffect(() => {
+    fetch('/api/earnings')
+      .then(res => res.json())
+      .then(d => {
+        setData(Array.isArray(d) ? d : []);
+        setLoading(false);
+      })
+      .catch(() => {
+        setData([]);
+        setLoading(false);
+      });
+  }, []);
+
+  const toggleExpand = (symbol: string) => {
+    setExpandedSymbol(expandedSymbol === symbol ? null : symbol);
+  };
+
+  const handleSearch = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!searchQuery.trim()) return;
+    
+    setSearching(true);
+    fetch(`/api/earnings/${searchQuery.toUpperCase()}`)
+      .then(res => {
+        if (!res.ok) throw new Error('Not found');
+        return res.json();
+      })
+      .then(result => {
+        setData(prev => {
+          const exists = prev.find(item => item.symbol === result.symbol);
+          if (exists) return prev;
+          return [result, ...prev];
+        });
+        setSearchQuery('');
+      })
+      .catch(() => {
+        alert('找不到該股票，請檢查代號 (如: AMD, PLTR)');
+      })
+      .finally(() => setSearching(false));
+  };
+
+  if (loading || !Array.isArray(data)) {
+    return (
+      <div className="grid gap-4">
+        {[...Array(5)].map((_, i) => (
+          <div key={i} className="h-20 bg-card-bg border border-border-subtle rounded-xl animate-pulse" />
+        ))}
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-col gap-6">
+      {/* Search Bar */}
+      <form onSubmit={handleSearch} className="flex gap-2">
+        <div className="relative flex-1">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-text-dim" />
+          <input 
+            type="text"
+            placeholder="搜尋美股代號財報 (如: AMD, NVDA, PLTR...)"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            className="w-full bg-card-bg border border-border-subtle rounded-xl py-3 pl-10 pr-4 text-sm focus:outline-none focus:border-brand transition-colors"
+          />
+        </div>
+        <button 
+          type="submit"
+          disabled={searching}
+          className="px-6 py-3 bg-brand text-white font-bold rounded-xl text-xs uppercase tracking-widest hover:bg-brand/80 transition-all disabled:opacity-50"
+        >
+          {searching ? 'Loading...' : 'Search'}
+        </button>
+      </form>
+
+      <section className="sleek-card !p-0 overflow-hidden">
+        <div className="p-5 border-b border-border-subtle">
+          <div className="card-title !mb-0">Mag 7 Earnings Tracker</div>
+        </div>
+        
+        <div className="flex flex-col">
+          {data.map((item, index) => {
+            let statusClass = "pill-blue";
+            let statusText = "10-Q";
+            if (item.symbol === 'AAPL') { statusClass = "pill-amber"; statusText = "10-K"; }
+            if (item.symbol === 'TSLA') { statusClass = "pill-green"; statusText = "GUIDANCE"; }
+
+            const isExpanded = expandedSymbol === item.symbol;
+
+            return (
+              <motion.div
+                key={item.symbol}
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                transition={{ delay: index * 0.05 }}
+                className="flex flex-col border-b border-border-subtle last:border-0 hover:bg-white/[0.01] transition-colors"
+              >
+                <div 
+                  className="flex items-center justify-between p-5 cursor-pointer"
+                  onClick={() => toggleExpand(item.symbol)}
+                >
+                  <div className="flex items-center gap-4">
+                    <div className="w-10 h-10 rounded-lg bg-dashboard-bg border border-border-subtle flex items-center justify-center font-bold text-xs">
+                      {item.symbol.substring(0, 2)}
+                    </div>
+                    <div className="flex flex-col">
+                      <span className="font-bold text-sm tracking-tight">{item.symbol}</span>
+                      <span className="text-[10px] text-text-dim uppercase tracking-wider font-medium">
+                        {STOCK_NAMES[item.symbol] || item.name}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Red box summary preview */}
+                  {!isExpanded && item.summary && (
+                    <div className="hidden lg:flex items-center gap-4 px-4 py-1.5 bg-red-500/5 border border-red-500/30 rounded-lg">
+                      <span className="text-[10px] font-bold text-red-500 uppercase tracking-tighter">
+                        Est EPS: {item.summary.epsEstimate?.toFixed(2) || 'N/A'}
+                      </span>
+                      <div className="w-px h-3 bg-red-500/20" />
+                      <span className="text-[10px] font-bold text-red-500 uppercase tracking-tighter">
+                        Rev: {(item.summary.revenueEstimate ? (item.summary.revenueEstimate / 1e9).toFixed(1) + 'B' : 'N/A')}
+                      </span>
+                    </div>
+                  )}
+
+                  <div className="flex items-center gap-6">
+                    <div className="flex flex-col items-end">
+                      <span className="text-xs font-medium text-text-dim">
+                        {new Date(item.earningsDate).toLocaleDateString('zh-TW', { month: 'short', day: 'numeric' })}
+                      </span>
+                      <span className="text-[10px] text-text-dim/50 uppercase tracking-tighter">Reporting Date</span>
+                    </div>
+                    <span className={`status-pill ${statusClass}`}>{statusText}</span>
+                    <ChevronRight className={`w-4 h-4 text-text-dim/30 transition-transform ${isExpanded ? 'rotate-90 text-brand' : ''}`} />
+                  </div>
+                </div>
+
+                {isExpanded && (
+                  <motion.div 
+                    initial={{ height: 0, opacity: 0 }}
+                    animate={{ height: 'auto', opacity: 1 }}
+                    className="overflow-hidden bg-dashboard-bg/30"
+                  >
+                    <div className="p-5 pt-0 space-y-6">
+                      {/* Quarter Comparison */}
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        {/* EPS Comparison */}
+                        <div className="p-4 bg-card-bg border border-border-subtle rounded-xl">
+                          <div className="flex justify-between items-center mb-3">
+                            <span className="text-[10px] font-bold text-text-dim uppercase tracking-widest">EPS Comparison</span>
+                            <span className="text-[8px] bg-blue-500/10 text-blue-400 px-1.5 py-0.5 rounded uppercase font-bold">Actual vs Est</span>
+                          </div>
+                          <div className="flex items-end gap-3">
+                            <div className="flex-1">
+                              <p className="text-[8px] text-text-dim/50 uppercase mb-1">Last ({item.summary?.lastQuarterLabel || 'N/A'})</p>
+                              <p className="text-xl font-bold">{item.summary?.epsActual !== null ? `$${item.summary.epsActual.toFixed(2)}` : '$N/A'}</p>
+                            </div>
+                            <div className="w-px h-8 bg-border-subtle" />
+                            <div className="flex-1">
+                              <p className="text-[8px] text-blue-400/70 uppercase mb-1 font-bold">Upcoming Est</p>
+                              <p className="text-xl font-bold text-blue-400">${item.summary?.epsEstimate?.toFixed(2) || 'N/A'}</p>
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Revenue Comparison */}
+                        <div className="p-4 bg-card-bg border border-border-subtle rounded-xl">
+                          <div className="flex justify-between items-center mb-3">
+                            <span className="text-[10px] font-bold text-text-dim uppercase tracking-widest">Revenue Comparison</span>
+                            {item.summary?.growth && (
+                              <span className={`text-[8px] px-1.5 py-0.5 rounded font-bold ${item.summary.growth > 0 ? 'bg-green-500/10 text-green-500' : 'bg-red-500/10 text-red-500'}`}>
+                                {item.summary.growth > 0 ? '+' : ''}{(item.summary.growth * 100).toFixed(1)}% YoY
+                              </span>
+                            )}
+                          </div>
+                          <div className="flex items-end gap-3">
+                            <div className="flex-1">
+                              <p className="text-[8px] text-text-dim/50 uppercase mb-1">Last Actual</p>
+                              <p className="text-xl font-bold">{(item.summary?.revenueActual ? (item.summary.revenueActual / 1e9).toFixed(1) + 'B' : 'N/A')}</p>
+                            </div>
+                            <div className="w-px h-8 bg-border-subtle" />
+                            <div className="flex-1">
+                              <p className="text-[8px] text-blue-400/70 uppercase mb-1 font-bold">Upcoming Est</p>
+                              <p className="text-xl font-bold text-blue-400">{(item.summary?.revenueEstimate ? (item.summary.revenueEstimate / 1e9).toFixed(1) + 'B' : 'N/A')}</p>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Detail Link */}
+                      {onSelectStock && (
+                        <button 
+                          onClick={() => onSelectStock(item.symbol)}
+                          className="w-full py-2 bg-white/5 border border-white/10 rounded-lg text-[10px] font-bold uppercase tracking-widest text-text-dim hover:text-white hover:border-brand/40 transition-all flex items-center justify-center gap-2"
+                        >
+                          <TrendingUp className="w-3 h-3 text-brand" />
+                          查看即時趨勢分析 View Trading Analysis
+                        </button>
+                      )}
+
+                      {/* Other Metrics */}
+                      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 pb-2">
+                         <div className="p-3 bg-card-bg/50 border border-border-subtle rounded-xl">
+                            <p className="text-[9px] font-medium text-text-dim/60 uppercase tracking-wider mb-1">Profit Margin</p>
+                            <p className="text-sm font-bold">{(item.summary?.margin ? (item.summary.margin * 100).toFixed(1) + '%' : 'N/A')}</p>
+                         </div>
+                         <div className="p-3 bg-card-bg/50 border border-border-subtle rounded-xl">
+                            <p className="text-[9px] font-medium text-text-dim/60 uppercase tracking-wider mb-1">Revenue Growth</p>
+                            <p className="text-sm font-bold">{(item.summary?.growth ? (item.summary.growth * 100).toFixed(1) + '%' : 'N/A')}</p>
+                         </div>
+                         <div className="p-3 bg-card-bg/50 border border-border-subtle rounded-xl">
+                            <p className="text-[9px] font-medium text-text-dim/60 uppercase tracking-wider mb-1">EPS TTM</p>
+                            <p className="text-sm font-bold">{(item.summary?.epsTTM ? '$' + item.summary.epsTTM.toFixed(2) : 'N/A')}</p>
+                         </div>
+                         <div className="p-3 bg-card-bg/50 border border-border-subtle rounded-xl">
+                            <p className="text-[9px] font-medium text-text-dim/60 uppercase tracking-wider mb-1">Ex-Div Date</p>
+                            <p className="text-sm font-bold truncate">{item.exDividendDate ? new Date(item.exDividendDate).toLocaleDateString() : 'N/A'}</p>
+                         </div>
+                      </div>
+                    </div>
+                  </motion.div>
+                )}
+              </motion.div>
+            );
+          })}
+        </div>
+      </section>
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <div className="sleek-card bg-gradient-to-br from-card-bg to-dashboard-bg">
+          <div className="flex items-center gap-2 mb-2">
+            <Clock className="w-4 h-4 text-brand" />
+            <span className="text-[10px] font-bold uppercase tracking-widest text-text-dim">Market Window</span>
+          </div>
+          <p className="text-sm font-medium">Earnings Season: Peak Activity</p>
+          <p className="text-xs text-text-dim mt-1 leading-relaxed">Most Magnificent 7 companies report within the same 14-day window.</p>
+        </div>
+        <div className="sleek-card border-brand/20 bg-brand/5">
+          <div className="flex items-center gap-2 mb-2">
+            <Info className="w-4 h-4 text-brand" />
+            <span className="text-[10px] font-bold uppercase tracking-widest text-text-dim">Quant Note</span>
+          </div>
+          <p className="text-sm font-medium">Implying Volatility</p>
+          <p className="text-xs text-text-dim mt-1 leading-relaxed">Historical move post-earnings averages +/- 4.2% for this group.</p>
+        </div>
+      </div>
+    </div>
+  );
+}
