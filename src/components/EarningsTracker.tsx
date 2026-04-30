@@ -83,12 +83,12 @@ export default function EarningsTracker({ onSelectStock }: { onSelectStock?: (sy
   return (
     <div className="flex flex-col gap-6">
       {/* Search Bar */}
-      <form onSubmit={handleSearch} className="flex gap-2">
+      <form onSubmit={handleSearch} className="flex flex-col sm:flex-row gap-2">
         <div className="relative flex-1">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-text-dim" />
           <input 
             type="text"
-            placeholder="搜尋美股代號財報 (如: AMD, NVDA, PLTR...)"
+            placeholder="搜尋美股代號 (如: AMD, NVDA...)"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             className="w-full bg-card-bg border border-border-subtle rounded-xl py-3 pl-10 pr-4 text-sm focus:outline-none focus:border-brand transition-colors"
@@ -97,7 +97,7 @@ export default function EarningsTracker({ onSelectStock }: { onSelectStock?: (sy
         <button 
           type="submit"
           disabled={searching}
-          className="px-6 py-3 bg-brand text-white font-bold rounded-xl text-xs uppercase tracking-widest hover:bg-brand/80 transition-all disabled:opacity-50"
+          className="w-full sm:w-auto px-6 py-3 bg-brand text-white font-bold rounded-xl text-xs uppercase tracking-widest hover:bg-brand/80 transition-all disabled:opacity-50"
         >
           {searching ? 'Loading...' : 'Search'}
         </button>
@@ -154,15 +154,15 @@ export default function EarningsTracker({ onSelectStock }: { onSelectStock?: (sy
                     </div>
                   )}
 
-                  <div className="flex items-center gap-6">
+                  <div className="flex items-center gap-2 sm:gap-6 ml-auto">
                     <div className="flex flex-col items-end">
-                      <span className="text-xs font-medium text-text-dim">
+                      <span className="text-[10px] sm:text-xs font-medium text-text-dim">
                         {new Date(item.earningsDate).toLocaleDateString('zh-TW', { month: 'short', day: 'numeric' })}
                       </span>
-                      <span className="text-[10px] text-text-dim/50 uppercase tracking-tighter">Reporting Date</span>
+                      <span className="hidden sm:inline text-[10px] text-text-dim/50 uppercase tracking-tighter">Reporting Date</span>
                     </div>
-                    <span className={`status-pill ${statusClass}`}>{statusText}</span>
-                    <ChevronRight className={`w-4 h-4 text-text-dim/30 transition-transform ${isExpanded ? 'rotate-90 text-brand' : ''}`} />
+                    <span className={`status-pill ${statusClass} text-[9px] sm:text-xs`}>{statusText}</span>
+                    <ChevronRight className={`w-4 h-4 text-text-dim/30 transition-transform flex-shrink-0 ${isExpanded ? 'rotate-90 text-brand' : ''}`} />
                   </div>
                 </div>
 
@@ -230,14 +230,14 @@ export default function EarningsTracker({ onSelectStock }: { onSelectStock?: (sy
                       )}
 
                       {/* Other Metrics */}
-                      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 pb-2">
+                      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 pb-2">
                          <div className="p-3 bg-card-bg/50 border border-border-subtle rounded-xl">
                             <p className="text-[9px] font-medium text-text-dim/60 uppercase tracking-wider mb-1">Profit Margin</p>
                             <p className="text-sm font-bold">{(item.summary?.margin ? (item.summary.margin * 100).toFixed(1) + '%' : 'N/A')}</p>
                          </div>
                          <div className="p-3 bg-card-bg/50 border border-border-subtle rounded-xl">
-                            <p className="text-[9px] font-medium text-text-dim/60 uppercase tracking-wider mb-1">Revenue Growth</p>
-                            <p className="text-sm font-bold">{(item.summary?.growth ? (item.summary.growth * 100).toFixed(1) + '%' : 'N/A')}</p>
+                            <p className="text-[9px] font-medium text-text-dim/60 uppercase tracking-wider mb-1">Rev Growth</p>
+                            <p className="text-sm font-bold truncate">{(item.summary?.growth ? (item.summary.growth * 100).toFixed(1) + '%' : 'N/A')}</p>
                          </div>
                          <div className="p-3 bg-card-bg/50 border border-border-subtle rounded-xl">
                             <p className="text-[9px] font-medium text-text-dim/60 uppercase tracking-wider mb-1">EPS TTM</p>

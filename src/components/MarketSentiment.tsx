@@ -50,9 +50,9 @@ export default function MarketSentiment() {
         <section className="sleek-card flex flex-col items-center text-center py-10 overflow-hidden relative">
           <div className="card-title w-full text-left px-5 absolute top-5">Fear & Greed Index</div>
           
-          <div className="mt-12 mb-4 relative flex flex-col items-center">
+          <div className="mt-12 mb-4 relative flex flex-col items-center w-full max-w-[280px]">
             {/* Semi-circular Gauge container */}
-            <div className="relative w-64 h-32 overflow-hidden flex items-end justify-center">
+            <div className="relative w-full aspect-[2/1] overflow-hidden flex items-end justify-center">
                <svg viewBox="0 0 200 100" className="w-full">
                  {/* Background Track */}
                  <path 
@@ -83,7 +83,7 @@ export default function MarketSentiment() {
                
                {/* Needle */}
                <motion.div 
-                 className="absolute bottom-0 left-1/2 w-0.5 h-24 bg-white/90 shadow-[0_0_10px_rgba(255,255,255,0.5)] origin-bottom rounded-full"
+                 className="absolute bottom-0 left-1/2 w-0.5 h-[75%] bg-white/90 shadow-[0_0_10px_rgba(255,255,255,0.5)] origin-bottom rounded-full"
                  style={{ x: "-50%" }}
                  initial={{ rotate: -90 }}
                  animate={{ rotate: needleRotation }}
@@ -102,9 +102,9 @@ export default function MarketSentiment() {
             </div>
           </div>
 
-          <div className="w-full mt-4 px-10 flex justify-between text-[9px] text-text-dim font-bold uppercase tracking-widest opacity-60">
+          <div className="w-full mt-4 px-4 sm:px-10 flex justify-between text-[8px] sm:text-[9px] text-text-dim font-bold uppercase tracking-widest opacity-60">
             <span>Extreme Fear</span>
-            <span>Neutral</span>
+            <span className="hidden xs:inline">Neutral</span>
             <span>Extreme Greed</span>
           </div>
         </section>

@@ -95,16 +95,18 @@ export default function TechnicalAnalysis({ initialSymbol = 'AAPL' }: { initialS
   return (
     <div className="flex flex-col gap-6">
       {/* Search Bar */}
-      <form onSubmit={handleSearch} className="relative group">
-        <input
-          type="text"
-          value={searchQuery}
-          onChange={(e) => setSearchQuery(e.target.value)}
-          placeholder="ENTER SYMBOL (E.G. NVDA)"
-          className="w-full bg-card-bg border border-border-subtle rounded-xl py-4 pl-12 pr-4 text-text-bright placeholder:text-text-dim/30 focus:outline-none focus:border-brand/50 transition-all text-sm font-medium tracking-tight"
-        />
-        <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-text-dim transition-colors group-focus-within:text-brand" />
-        <button type="submit" className="absolute right-3 top-1/2 -translate-y-1/2 bg-brand hover:bg-brand/80 text-white text-[10px] font-bold px-4 py-2 rounded-lg transition-colors uppercase tracking-widest">
+      <form onSubmit={handleSearch} className="flex flex-col sm:flex-row gap-2 relative group mt-2 sm:mt-0">
+        <div className="relative flex-1">
+          <input
+            type="text"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="ENTER SYMBOL (E.G. NVDA)"
+            className="w-full bg-card-bg border border-border-subtle rounded-xl py-4 pl-12 pr-4 text-text-bright placeholder:text-text-dim/30 focus:outline-none focus:border-brand/50 transition-all text-sm font-medium tracking-tight"
+          />
+          <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-text-dim transition-colors group-focus-within:text-brand" />
+        </div>
+        <button type="submit" className="w-full sm:w-auto h-auto sm:h-auto px-6 py-4 sm:py-2 bg-brand hover:bg-brand/80 text-white text-[10px] font-bold rounded-xl transition-colors uppercase tracking-widest sm:absolute sm:right-3 sm:top-1/2 sm:-translate-y-1/2">
           Analytic
         </button>
       </form>
@@ -130,7 +132,7 @@ export default function TechnicalAnalysis({ initialSymbol = 'AAPL' }: { initialS
                 </LineChart>
               </ResponsiveContainer>
             </div>
-            <div className="flex justify-center gap-6 mt-4">
+            <div className="flex flex-wrap justify-center gap-4 sm:gap-6 mt-4">
               <div className="flex items-center gap-2">
                 <div className="w-3 h-0.5 bg-text-bright" />
                 <span className="text-[10px] text-text-dim font-bold uppercase tracking-wider">Price</span>
