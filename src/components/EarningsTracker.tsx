@@ -46,10 +46,13 @@ export default function EarningsTracker({ onSelectStock }: { onSelectStock?: (sy
     setExpandedSymbol(expandedSymbol === symbol ? null : symbol);
   };
 
+  const [error, setError] = useState<string | null>(null);
+
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
     if (!searchQuery.trim()) return;
     
+    setError(null);
     setSearching(true);
     fetch(`/api/earnings/${searchQuery.toUpperCase()}`)
       .then(res => {
@@ -65,7 +68,7 @@ export default function EarningsTracker({ onSelectStock }: { onSelectStock?: (sy
         setSearchQuery('');
       })
       .catch(() => {
-        alert('找不到該股票，請檢查代號 (如: AMD, PLTR)');
+        setError('找不到該股票，請檢查代號 (如: AMD, PLTR)');
       })
       .finally(() => setSearching(false));
   };
@@ -83,25 +86,38 @@ export default function EarningsTracker({ onSelectStock }: { onSelectStock?: (sy
   return (
     <div className="flex flex-col gap-6">
       {/* Search Bar */}
-      <form onSubmit={handleSearch} className="flex flex-col sm:flex-row gap-2">
-        <div className="relative flex-1">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-text-dim" />
-          <input 
-            type="text"
-            placeholder="搜尋美股代號 (如: AMD, NVDA...)"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            className="w-full bg-card-bg border border-border-subtle rounded-xl py-3 pl-10 pr-4 text-sm focus:outline-none focus:border-brand transition-colors"
-          />
-        </div>
-        <button 
-          type="submit"
-          disabled={searching}
-          className="w-full sm:w-auto px-6 py-3 bg-brand text-white font-bold rounded-xl text-xs uppercase tracking-widest hover:bg-brand/80 transition-all disabled:opacity-50"
-        >
-          {searching ? 'Loading...' : 'Search'}
-        </button>
-      </form>
+      <div className="flex flex-col gap-2">
+        <form onSubmit={handleSearch} className="flex flex-col sm:flex-row gap-2">
+          <div className="relative flex-1">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-text-dim" />
+            <input 
+              type="text"
+              inputMode="text"
+              autoCapitalize="characters"
+              placeholder="搜尋美股代號 (如: AMD, NVDA...)"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="w-full bg-card-bg border border-border-subtle rounded-xl py-3 pl-10 pr-4 text-sm focus:outline-none focus:border-brand transition-colors"
+            />
+          </div>
+          <button 
+            type="submit"
+            disabled={searching}
+            className="w-full sm:w-auto px-6 py-3 bg-brand text-white font-bold rounded-xl text-xs uppercase tracking-widest hover:bg-brand/80 transition-all disabled:opacity-50"
+          >
+            {searching ? 'Loading...' : 'Search'}
+          </button>
+        </form>
+        {error && (
+          <motion.div 
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: 'auto' }}
+            className="text-xs text-red-400 pl-2 font-medium"
+          >
+            {error}
+          </motion.div>
+        )}
+      </div>
 
       <section className="sleek-card !p-0 overflow-hidden">
         <div className="p-5 border-b border-border-subtle">

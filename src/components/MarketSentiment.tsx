@@ -95,7 +95,7 @@ export default function MarketSentiment() {
             </div>
 
             <div className="flex flex-col items-center mt-2">
-              <div className="vix-display text-4xl font-light tracking-tighter">{fg}</div>
+              <div className="text-4xl font-light tracking-tighter text-text-bright">{fg}</div>
               <div className={`status-pill mt-2 ${fg > 60 ? 'pill-green' : fg < 40 ? 'pill-amber' : 'pill-blue'}`}>
                 {sentiment.fearAndGreed.label || (fg > 75 ? 'Extreme Greed' : fg > 55 ? 'Greed' : fg > 45 ? 'Neutral' : fg > 25 ? 'Fear' : 'Extreme Fear')}
               </div>
@@ -114,7 +114,7 @@ export default function MarketSentiment() {
           <div className="card-title absolute top-5">VIX Volatility Index</div>
           
           <div className="flex flex-col items-center gap-2 mt-4">
-            <div className="vix-display">{sentiment.vix.value?.toFixed(2)}</div>
+            <div className="text-4xl font-light tracking-tighter text-text-bright">{sentiment.vix.value?.toFixed(2)}</div>
             <div className={`flex items-center gap-1 text-xs font-bold ${sentiment.vix.change > 0 ? 'text-red-500' : 'text-emerald-500'}`}>
               {sentiment.vix.change > 0 ? <TrendingUp className="w-3 h-3" /> : <TrendingDown className="w-3 h-3" />}
               <span>{Math.abs(sentiment.vix.change || 0).toFixed(2)}%</span>

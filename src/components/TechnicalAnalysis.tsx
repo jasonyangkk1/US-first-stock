@@ -20,6 +20,7 @@ export default function TechnicalAnalysis({ initialSymbol = 'AAPL' }: { initialS
   const [searchQuery, setSearchQuery] = useState('');
   const [stockData, setStockData] = useState<StockData | null>(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   // Update internal symbol if prop changes
   useEffect(() => {
@@ -30,15 +31,19 @@ export default function TechnicalAnalysis({ initialSymbol = 'AAPL' }: { initialS
 
   const fetchStock = (s: string) => {
     setLoading(true);
+    setError(null);
     fetch(`/api/stock/${s.toUpperCase()}`)
       .then(res => res.json())
       .then(d => {
-        if (d.error) throw new Error(d.error);
+        if (d.error || !d.data || d.data.length === 0) throw new Error(d.error || 'Symbol not found');
         setStockData(d);
+        setSymbol(s.toUpperCase());
         setLoading(false);
+        setSearchQuery('');
       })
       .catch((err) => {
         console.error(err);
+        setError(`Cannot find data for ${s.toUpperCase()}`);
         setLoading(false);
       });
   };
@@ -95,21 +100,34 @@ export default function TechnicalAnalysis({ initialSymbol = 'AAPL' }: { initialS
   return (
     <div className="flex flex-col gap-6">
       {/* Search Bar */}
-      <form onSubmit={handleSearch} className="flex flex-col sm:flex-row gap-2 relative group mt-2 sm:mt-0">
-        <div className="relative flex-1">
-          <input
-            type="text"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="ENTER SYMBOL (E.G. NVDA)"
-            className="w-full bg-card-bg border border-border-subtle rounded-xl py-4 pl-12 pr-4 text-text-bright placeholder:text-text-dim/30 focus:outline-none focus:border-brand/50 transition-all text-sm font-medium tracking-tight"
-          />
-          <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-text-dim transition-colors group-focus-within:text-brand" />
-        </div>
-        <button type="submit" className="w-full sm:w-auto h-auto sm:h-auto px-6 py-4 sm:py-2 bg-brand hover:bg-brand/80 text-white text-[10px] font-bold rounded-xl transition-colors uppercase tracking-widest sm:absolute sm:right-3 sm:top-1/2 sm:-translate-y-1/2">
-          Analytic
-        </button>
-      </form>
+      <div className="flex flex-col gap-2">
+        <form onSubmit={handleSearch} className="flex flex-col sm:flex-row gap-2 relative group mt-2 sm:mt-0">
+          <div className="relative flex-1">
+            <input
+              type="text"
+              inputMode="text"
+              autoCapitalize="characters"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="ENTER SYMBOL (E.G. NVDA)"
+              className="w-full bg-card-bg border border-border-subtle rounded-xl py-4 pl-12 pr-4 text-text-bright placeholder:text-text-dim/30 focus:outline-none focus:border-brand/50 transition-all text-sm font-medium tracking-tight"
+            />
+            <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-text-dim transition-colors group-focus-within:text-brand" />
+          </div>
+          <button type="submit" className="w-full sm:w-auto px-6 py-4 sm:py-2 bg-brand hover:bg-brand/80 text-white text-[10px] font-bold rounded-xl transition-colors uppercase tracking-widest sm:absolute sm:right-3 sm:top-1/2 sm:-translate-y-1/2">
+            Analytic
+          </button>
+        </form>
+        {error && (
+          <motion.div 
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: 'auto' }}
+            className="text-[10px] text-red-400 pl-4 font-bold uppercase tracking-wider"
+          >
+            {error}
+          </motion.div>
+        )}
+      </div>
 
       {loading ? (
         <div className="h-[400px] bg-card-bg border border-border-subtle rounded-xl animate-pulse flex items-center justify-center">

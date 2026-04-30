@@ -35,7 +35,7 @@ export default function App() {
   ];
 
   return (
-    <div className="min-h-screen bg-dashboard-bg text-text-bright font-sans selection:bg-brand/30 flex flex-col md:flex-row">
+    <div className="min-h-screen min-h-[100dvh] bg-dashboard-bg text-text-bright font-sans selection:bg-brand/30 flex flex-col md:flex-row overflow-x-hidden">
       {/* Desktop Sidebar */}
       <aside className="hidden md:flex w-72 flex-col bg-card-bg border-r border-border-subtle p-6 fixed inset-y-0">
         <div className="flex items-center gap-3 mb-10">
@@ -83,7 +83,11 @@ export default function App() {
             <span className="hidden sm:block">SPX: 5,728.32 (+0.4%)</span>
             <span className="hidden sm:block">NDX: 20,011.84 (+0.8%)</span>
             <div className="flex items-center gap-2">
-              <button className="p-2 hover:bg-white/5 rounded-full transition-colors">
+              <button 
+                onClick={() => setActiveTab('technical')}
+                className="p-2 hover:bg-white/5 rounded-full transition-colors"
+                aria-label="Search Stock"
+              >
                 <Search className="w-5 h-5" />
               </button>
               <button className="p-2 hover:bg-white/5 rounded-full transition-colors">
