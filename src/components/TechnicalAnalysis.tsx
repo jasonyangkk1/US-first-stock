@@ -30,37 +30,101 @@ export default function TechnicalAnalysis({ initialSymbol = 'AAPL' }: { initialS
   }, [initialSymbol]);
 
   const fetchStock = (s: string) => {
+    if (!s) return;
     setLoading(true);
     setError(null);
-    fetch(`/api/stock/${s.toUpperCase()}`)
-      .then(res => res.json())
-      .then(d => {
-        if (d.error || !d.data || d.data.length === 0) throw new Error(d.error || 'Symbol not found');
-        setStockData(d);
-        setSymbol(s.toUpperCase());
+    const ticker = s.toUpperCase();
+    
+    // Using direct Yahoo Finance chart API (v8) - Switching to query2 for better CORS compatibility
+    const url = `https://query2.finance.yahoo.com/v8/finance/chart/${ticker}?interval=1d&range=1y`;
+    
+    const fallbackData = (s: string) => {
+      const mockData = [];
+      let basePrice = 150 + Math.random() * 100;
+      for(let i=0; i<250; i++) {
+        basePrice += (Math.random() - 0.48) * 5;
+        mockData.push({
+          date: new Date(Date.now() - (250 - i) * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+          close: basePrice,
+          ma50: basePrice * 0.98,
+          ma200: basePrice * 0.95,
+        });
+      }
+      return mockData;
+    };
+
+    fetch(url, { mode: 'cors' })
+      .then(res => {
+        if (!res.ok) throw new Error('API Error');
+        return res.json();
+      })
+      .then(json => {
+        const result = json.chart?.result?.[0];
+        if (!result) throw new Error('Symbol not found');
+
+        const indicators = result.indicators.quote[0];
+        const timestamps = result.timestamp;
+        const closes = indicators.close;
+        const meta = result.meta;
+        
+        if (!timestamps || !closes) throw new Error('Incomplete data');
+
+        const currentPrice = meta.regularMarketPrice || closes[closes.length - 1] || 0;
+
+        // Map and fill nulls
+        const validData = closes.map((c: any, i: number) => ({
+          close: c !== null ? c : (i > 0 && closes[i-1] !== null ? closes[i-1] : (meta.previousClose || 0)),
+          timestamp: timestamps[i]
+        }));
+
+        const prices = validData.map((d: any) => d.close);
+
+        const calculateMA = (data: number[], period: number) => {
+          return data.map((_, idx, arr) => {
+            if (idx < period - 1) return null;
+            const slice = arr.slice(idx - period + 1, idx + 1);
+            const sum = slice.reduce((a, b) => a + b, 0);
+            return sum / period;
+          });
+        };
+
+        const ma50 = calculateMA(prices, 50);
+        const ma200 = calculateMA(prices, 200);
+
+        const formattedData = validData.map((d: any, i: number) => ({
+          date: new Date(d.timestamp * 1000).toISOString().split('T')[0],
+          close: d.close,
+          ma50: ma50[i],
+          ma200: ma200[i],
+        }));
+
+        setStockData({
+          symbol: ticker,
+          currentPrice: currentPrice,
+          data: formattedData
+        });
+        setSymbol(ticker);
         setLoading(false);
         setSearchQuery('');
       })
       .catch((err) => {
-        console.error(err);
-        setError(`Cannot find data for ${s.toUpperCase()}`);
+        console.warn(`Fetch error for ${ticker}, using mock data:`, err);
+        const mock = fallbackData(ticker);
+        setStockData({
+          symbol: ticker,
+          currentPrice: mock[mock.length - 1].close,
+          data: mock
+        });
+        setSymbol(ticker);
         setLoading(false);
+        setSearchQuery('');
+        // Show a little warning instead of hard error
+        setError(`Live data blocked for ${ticker}. Showing simulation.`);
       });
   };
 
   useEffect(() => {
-    fetch(`/api/stock/${symbol.toUpperCase()}`)
-      .then(res => res.json())
-      .then(d => {
-        if (d.error || !d.data || !Array.isArray(d.data)) throw new Error('Invalid data');
-        setStockData(d);
-        setLoading(false);
-      })
-      .catch((err) => {
-        console.error(err);
-        setStockData(null);
-        setLoading(false);
-      });
+    fetchStock(symbol);
   }, [symbol]);
 
   const handleSearch = (e: React.FormEvent) => {
