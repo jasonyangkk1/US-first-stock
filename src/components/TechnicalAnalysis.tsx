@@ -53,56 +53,15 @@ export default function TechnicalAnalysis({ initialSymbol = 'AAPL' }: { initialS
       return mockData;
     };
 
-    fetch(url, { mode: 'cors' })
+    fetch(`/api/stock/${ticker}`)
       .then(res => {
         if (!res.ok) throw new Error('API Error');
         return res.json();
       })
-      .then(json => {
-        const result = json.chart?.result?.[0];
-        if (!result) throw new Error('Symbol not found');
-
-        const indicators = result.indicators.quote[0];
-        const timestamps = result.timestamp;
-        const closes = indicators.close;
-        const meta = result.meta;
+      .then(data => {
+        if (!data || !data.data || data.data.length === 0) throw new Error('No data');
         
-        if (!timestamps || !closes) throw new Error('Incomplete data');
-
-        const currentPrice = meta.regularMarketPrice || closes[closes.length - 1] || 0;
-
-        // Map and fill nulls
-        const validData = closes.map((c: any, i: number) => ({
-          close: c !== null ? c : (i > 0 && closes[i-1] !== null ? closes[i-1] : (meta.previousClose || 0)),
-          timestamp: timestamps[i]
-        }));
-
-        const prices = validData.map((d: any) => d.close);
-
-        const calculateMA = (data: number[], period: number) => {
-          return data.map((_, idx, arr) => {
-            if (idx < period - 1) return null;
-            const slice = arr.slice(idx - period + 1, idx + 1);
-            const sum = slice.reduce((a, b) => a + b, 0);
-            return sum / period;
-          });
-        };
-
-        const ma50 = calculateMA(prices, 50);
-        const ma200 = calculateMA(prices, 200);
-
-        const formattedData = validData.map((d: any, i: number) => ({
-          date: new Date(d.timestamp * 1000).toISOString().split('T')[0],
-          close: d.close,
-          ma50: ma50[i],
-          ma200: ma200[i],
-        }));
-
-        setStockData({
-          symbol: ticker,
-          currentPrice: currentPrice,
-          data: formattedData
-        });
+        setStockData(data);
         setSymbol(ticker);
         setLoading(false);
         setSearchQuery('');

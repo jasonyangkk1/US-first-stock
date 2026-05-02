@@ -32,79 +32,75 @@ export default function EarningsTracker({ onSelectStock }: { onSelectStock?: (sy
   const MAG7 = ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META', 'TSLA', 'NVDA'];
 
   const fetchEarningsData = async (symbols: string[]) => {
+    // If it's the bulk fetch for MAG7
+    if (symbols.length > 1) {
+      try {
+        const res = await fetch('/api/earnings');
+        if (!res.ok) throw new Error('Backend failed');
+        const data = await res.json();
+        // The backend might return items with summary: null if Yahoo fails on server
+        // Fill those with fallbacks if needed
+        return data.map((item: any) => {
+          if (!item.summary) {
+            const fallback = getFallbackFor(item.symbol);
+            return { ...item, ...fallback };
+          }
+          return item;
+        });
+      } catch (e) {
+        console.warn('Backend bulk fetch failed, using frontend logic/fallbacks', e);
+        // If backend fails, we could try individual fetches or just return empty
+        // For robustness, let's just use the individual fetch logic below which has fallbacks
+      }
+    }
+
+    // Individual fetches (search or fallback for bulk)
     const results = await Promise.allSettled(symbols.map(async (symbol) => {
       try {
-        // Try query2 first as it's often more permissive
-        const res = await fetch(
-          `https://query2.finance.yahoo.com/v8/finance/chart/${symbol}?interval=1d&range=5d`,
-          { 
-            headers: { 'Accept': 'application/json' },
-            mode: 'cors'
-          }
-        );
-        
-        if (!res.ok) throw new Error('Network response was not ok');
-        
-        const json = await res.json();
-        const meta = json.chart?.result?.[0]?.meta;
-        if (!meta) throw new Error('No data found in YF response');
-        
-        return {
-          symbol: meta.symbol,
-          name: meta.shortName || meta.symbol,
-          earningsDate: new Date().toISOString(), 
-          exDividendDate: null,
-          summary: {
-            epsEstimate: meta.epsForward || null,
-            revenueEstimate: null,
-            epsActual: null,
-            revenueActual: null,
-            lastQuarterLabel: 'Q1',
-            prevEpsActual: null,
-            prevRevenueActual: null,
-            margin: meta.profitMargins || 0.25,
-            growth: meta.earningsGrowth || 0.15,
-            epsTTM: meta.epsTrailingTwelveMonths || null,
-          }
-        };
+        const res = await fetch(`/api/earnings/${symbol}`);
+        if (!res.ok) throw new Error('Symbol fetch failed');
+        return await res.json();
       } catch (e) {
-        console.warn(`Fetch failed for ${symbol}, using fallback:`, e);
-        // Robust Fallback Data for MAG7
-        const fallbacks: Record<string, any> = {
-          'AAPL': { name: 'Apple Inc.', margin: 0.26, growth: 0.05 },
-          'MSFT': { name: 'Microsoft Corp.', margin: 0.35, growth: 0.18 },
-          'GOOGL': { name: 'Alphabet Inc.', margin: 0.24, growth: 0.14 },
-          'AMZN': { name: 'Amazon.com Inc.', margin: 0.06, growth: 0.12 },
-          'META': { name: 'Meta Platforms', margin: 0.29, growth: 0.27 },
-          'TSLA': { name: 'Tesla, Inc.', margin: 0.15, growth: 0.09 },
-          'NVDA': { name: 'NVIDIA Corp.', margin: 0.49, growth: 2.65 },
-        };
-        
-        const f = fallbacks[symbol] || { name: symbol, margin: 0.1, growth: 0.05 };
-        return {
-          symbol,
-          name: f.name,
-          earningsDate: new Date().toISOString(),
-          exDividendDate: null,
-          summary: {
-            epsEstimate: 1.5,
-            revenueEstimate: null,
-            epsActual: 1.6,
-            revenueActual: null,
-            lastQuarterLabel: 'TTM',
-            prevEpsActual: 1.4,
-            prevRevenueActual: null,
-            margin: f.margin,
-            growth: f.growth,
-            epsTTM: 5.2,
-          }
-        };
+        console.warn(`Backend fetch failed for ${symbol}, using frontend fallback:`, e);
+        return getFallbackFor(symbol);
       }
     }));
     
     return results
-      .filter((r): r is PromiseFulfilledResult<any> => r.status === 'fulfilled')
-      .map(r => r.value as EarningsData);
+      .filter((r): r is PromiseSettledResult<any> => r.status === 'fulfilled')
+      .map(r => (r as PromiseFulfilledResult<EarningsData>).value);
+  };
+
+  const getFallbackFor = (symbol: string): EarningsData => {
+    const fallbacks: Record<string, any> = {
+      'AAPL': { name: 'Apple Inc.', margin: 0.26, growth: 0.05 },
+      'MSFT': { name: 'Microsoft Corp.', margin: 0.35, growth: 0.18 },
+      'GOOGL': { name: 'Alphabet Inc.', margin: 0.24, growth: 0.14 },
+      'AMZN': { name: 'Amazon.com Inc.', margin: 0.06, growth: 0.12 },
+      'META': { name: 'Meta Platforms', margin: 0.29, growth: 0.27 },
+      'TSLA': { name: 'Tesla, Inc.', margin: 0.15, growth: 0.09 },
+      'NVDA': { name: 'NVIDIA Corp.', margin: 0.49, growth: 2.65 },
+    };
+    
+    const f = fallbacks[symbol] || { name: symbol, margin: 0.1, growth: 0.05 };
+    return {
+      symbol,
+      name: f.name,
+      earningsDate: new Date().toISOString(),
+      exDividendDate: null,
+      summary: {
+        epsEstimate: 1.5,
+        revenueEstimate: null,
+        epsActual: 1.6,
+        revenueActual: null,
+        lastQuarterLabel: 'TTM',
+        prevEpsActual: 1.4,
+        prevRevenueActual: null,
+        margin: f.margin,
+        growth: f.growth,
+        epsTTM: 5.2,
+      }
+    };
   };
 
   useEffect(() => {

@@ -22,47 +22,10 @@ export default function MarketSentiment() {
     const fetchSentiment = async () => {
       setLoading(true);
       try {
-        // Fetch Fear & Greed from Alternative.me
-        let fgValue = 50;
-        let fgLabel = 'Neutral';
-        try {
-          const fgRes = await fetch('https://api.alternative.me/fng/?limit=1');
-          const fgData = await fgRes.json();
-          fgValue = parseInt(fgData.data[0].value);
-          fgLabel = fgData.data[0].value_classification;
-        } catch (e) {
-          console.warn('FG fetch failed, using fallback');
-        }
-
-        // Fetch VIX from Yahoo Finance (direct chart API) - query2 for better CORS
-        let currentVix = 15.5;
-        let vixChange = 0.5;
-        try {
-          const vixUrl = `https://query2.finance.yahoo.com/v8/finance/chart/%5EVIX?interval=1d&range=5d`;
-          const vixRes = await fetch(vixUrl, { mode: 'cors' });
-          const vixJson = await vixRes.json();
-          const vixResult = vixJson.chart?.result?.[0];
-          
-          const vixMeta = vixResult?.meta;
-          const vixCloses = vixResult?.indicators.quote[0].close;
-          currentVix = vixMeta?.regularMarketPrice || (vixCloses && vixCloses[vixCloses.length - 1]) || 15.5;
-          const prevVix = vixMeta?.chartPreviousClose || (vixCloses && vixCloses[vixCloses.length - 2]);
-          vixChange = prevVix ? ((currentVix - prevVix) / prevVix) * 100 : 0.5;
-        } catch (e) {
-          console.warn('VIX fetch failed, using fallback');
-        }
-
-        setSentiment({
-          vix: { 
-            value: currentVix, 
-            change: vixChange 
-          },
-          fearAndGreed: { 
-            value: fgValue, 
-            label: fgLabel, 
-            updated: new Date().toISOString() 
-          }
-        });
+        const res = await fetch('/api/sentiment');
+        if (!res.ok) throw new Error('Sentiment API failed');
+        const data = await res.json();
+        setSentiment(data);
       } catch (error) {
         console.error('Error fetching sentiment:', error);
         // Absolute fallback to prevent blank page
