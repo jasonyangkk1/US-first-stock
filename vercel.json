@@ -1,0 +1,26 @@
+
+{
+  "version": 2,
+  "rewrites": [
+    {
+      "source": "/api/earnings/:symbol",
+      "destination": "/api/earnings/[symbol]"
+    },
+    {
+      "source": "/api/stock/:symbol",
+      "destination": "/api/stock/[symbol]"
+    },
+    {
+      "source": "/api/quote/:symbol",
+      "destination": "/api/quote/[symbol]"
+    },
+    {
+      "source": "/(api/.*)",
+      "destination": "/$1"
+    },
+    {
+      "source": "/(.*)",
+      "destination": "/index.html"
+    }
+  ]
+}
