@@ -38,21 +38,6 @@ export default function TechnicalAnalysis({ initialSymbol = 'AAPL' }: { initialS
     // Using direct Yahoo Finance chart API (v8) - Switching to query2 for better CORS compatibility
     const url = `https://query2.finance.yahoo.com/v8/finance/chart/${ticker}?interval=1d&range=1y`;
     
-    const fallbackData = (s: string) => {
-      const mockData = [];
-      let basePrice = 150 + Math.random() * 100;
-      for(let i=0; i<250; i++) {
-        basePrice += (Math.random() - 0.48) * 5;
-        mockData.push({
-          date: new Date(Date.now() - (250 - i) * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
-          close: basePrice,
-          ma50: basePrice * 0.98,
-          ma200: basePrice * 0.95,
-        });
-      }
-      return mockData;
-    };
-
     fetch(`/api/stock/${ticker}`)
       .then(res => {
         if (!res.ok) throw new Error('API Error');
@@ -66,19 +51,29 @@ export default function TechnicalAnalysis({ initialSymbol = 'AAPL' }: { initialS
         setLoading(false);
         setSearchQuery('');
       })
-      .catch((err) => {
-        console.warn(`Fetch error for ${ticker}, using mock data:`, err);
-        const mock = fallbackData(ticker);
-        setStockData({
-          symbol: ticker,
-          currentPrice: mock[mock.length - 1].close,
-          data: mock
-        });
+      .catch(async (err) => {
+        console.warn(`Fetch error for ${ticker}, attempting quote fallback:`, err);
+        try {
+          const quoteRes = await fetch(`/api/quote/${ticker}`);
+          if (quoteRes.ok) {
+            const quoteData = await quoteRes.json();
+            setStockData({
+              symbol: ticker,
+              currentPrice: quoteData.currentPrice,
+              data: [] // Empty chart, but correct price
+            });
+            setError(`圖表資料載入失敗，顯示即時報價。`);
+          } else {
+            throw new Error('Quote fallback failed');
+          }
+        } catch (fallbackErr) {
+          console.error('Final fallback failed:', fallbackErr);
+          setError(`無法取得 ${ticker} 的資料，請稍後再試。`);
+          setStockData(null);
+        }
         setSymbol(ticker);
         setLoading(false);
         setSearchQuery('');
-        // Show a little warning instead of hard error
-        setError(`Live data blocked for ${ticker}. Showing simulation.`);
       });
   };
 

@@ -168,9 +168,11 @@ async function startServer() {
         };
       });
 
+      const lastValidQuote = [...quotes].reverse().find((q: any) => q.close != null);
+      
       const result = {
         symbol,
-        currentPrice: quotes[quotes.length - 1].close || 0,
+        currentPrice: lastValidQuote?.close ?? 0,
         data: data.slice(-250) 
       };
 
@@ -179,6 +181,22 @@ async function startServer() {
     } catch (error) {
       console.error('Stock Data Error:', error);
       res.json({ symbol, currentPrice: 0, data: [] });
+    }
+  });
+
+  // 3. Sentiment: VIX and CNN Fear & Greed
+  app.get('/api/quote/:symbol', async (req, res) => {
+    const { symbol } = req.params;
+    try {
+      const quote: any = await yahooFinance.quote(symbol);
+      res.json({
+        symbol: symbol.toUpperCase(),
+        currentPrice: quote.regularMarketPrice ?? 0,
+        change: quote.regularMarketChange ?? 0,
+        changePercent: quote.regularMarketChangePercent ?? 0,
+      });
+    } catch (e) {
+      res.status(404).json({ error: 'Not found' });
     }
   });
 

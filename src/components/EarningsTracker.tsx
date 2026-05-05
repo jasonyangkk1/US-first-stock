@@ -121,6 +121,15 @@ export default function EarningsTracker({ onSelectStock }: { onSelectStock?: (sy
     setExpandedSymbol(expandedSymbol === symbol ? null : symbol);
   };
 
+  const safeDate = (val: any): Date => {
+    if (!val) return new Date();
+    // Unix timestamp (seconds) to milliseconds
+    if (typeof val === 'number') return new Date(val * 1000);
+    // If it's a numeric string (10 digits)
+    if (typeof val === 'string' && /^\d{10}$/.test(val)) return new Date(Number(val) * 1000);
+    return new Date(val);
+  };
+
   const [error, setError] = useState<string | null>(null);
 
   const handleSearch = (e: React.FormEvent) => {
@@ -247,7 +256,7 @@ export default function EarningsTracker({ onSelectStock }: { onSelectStock?: (sy
                   <div className="flex items-center gap-2 sm:gap-6 ml-auto">
                     <div className="flex flex-col items-end">
                       <span className="text-[10px] sm:text-xs font-medium text-text-dim">
-                        {new Date(item.earningsDate).toLocaleDateString('zh-TW', { month: 'short', day: 'numeric' })}
+                        {safeDate(item.earningsDate).toLocaleDateString('zh-TW', { month: 'short', day: 'numeric' })}
                       </span>
                       <span className="hidden sm:inline text-[10px] text-text-dim/50 uppercase tracking-tighter">Reporting Date</span>
                     </div>
@@ -335,7 +344,7 @@ export default function EarningsTracker({ onSelectStock }: { onSelectStock?: (sy
                          </div>
                          <div className="p-3 bg-card-bg/50 border border-border-subtle rounded-xl">
                             <p className="text-[9px] font-medium text-text-dim/60 uppercase tracking-wider mb-1">Ex-Div Date</p>
-                            <p className="text-sm font-bold truncate">{item.exDividendDate ? new Date(item.exDividendDate).toLocaleDateString() : 'N/A'}</p>
+                            <p className="text-sm font-bold truncate">{item.exDividendDate ? safeDate(item.exDividendDate).toLocaleDateString() : 'N/A'}</p>
                          </div>
                       </div>
                     </div>
