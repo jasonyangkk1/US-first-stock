@@ -123,11 +123,21 @@ export default function EarningsTracker({ onSelectStock }: { onSelectStock?: (sy
 
   const safeDate = (val: any): Date => {
     if (!val) return new Date();
-    // Unix timestamp (seconds) to milliseconds
-    if (typeof val === 'number') return new Date(val * 1000);
-    // If it's a numeric string (10 digits)
-    if (typeof val === 'string' && /^\d{10}$/.test(val)) return new Date(Number(val) * 1000);
-    return new Date(val);
+    // Handle number inputs (Unix timestamps)
+    if (typeof val === 'number') {
+      // If > 10^12, it's likely milliseconds; otherwise, it's seconds
+      const isMs = val > 100000000000;
+      return new Date(isMs ? val : val * 1000);
+    }
+    // Handle numeric strings
+    if (typeof val === 'string' && /^\d+$/.test(val)) {
+      const num = Number(val);
+      const isMs = num > 100000000000;
+      return new Date(isMs ? num : num * 1000);
+    }
+    // Default: try to parse as ISO string or other date format
+    const parsed = new Date(val);
+    return isNaN(parsed.getTime()) ? new Date() : parsed;
   };
 
   const [error, setError] = useState<string | null>(null);

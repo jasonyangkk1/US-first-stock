@@ -24,6 +24,23 @@ async function startServer() {
 
   // API Routes
   
+  // Helper to standardize dates from Yahoo Finance
+  const formatYFDate = (d: any) => {
+    if (!d) return null;
+    if (d instanceof Date) return d.toISOString();
+    if (typeof d === 'number') {
+      // Logic: If > 10^12, it's milliseconds; otherwise, it's seconds
+      const isMs = d > 100000000000; 
+      return new Date(isMs ? d : d * 1000).toISOString();
+    }
+    // If it's already a string, ensure it's ISO or just return it
+    try {
+      const parsed = new Date(d);
+      if (!isNaN(parsed.getTime())) return parsed.toISOString();
+    } catch { /* ignore */ }
+    return String(d);
+  };
+
   // 1. Earnings Tracker for Mag 7
   app.get('/api/earnings', async (req, res) => {
     const symbols = ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META', 'TSLA', 'NVDA'];
@@ -51,8 +68,8 @@ async function startServer() {
           return {
             symbol,
             name: quote.price?.shortName || symbol,
-            earningsDate: quote.calendarEvents?.earnings?.earningsDate?.[0] || new Date().toISOString(),
-            exDividendDate: quote.calendarEvents?.exDividendDate || null,
+            earningsDate: formatYFDate(quote.calendarEvents?.earnings?.earningsDate?.[0]),
+            exDividendDate: formatYFDate(quote.calendarEvents?.exDividendDate),
             summary: {
               epsEstimate: quote.calendarEvents?.earnings?.earningsAverage || null,
               revenueEstimate: quote.calendarEvents?.earnings?.revenueAverage || null,
@@ -104,8 +121,8 @@ async function startServer() {
       const result = {
         symbol: symbol.toUpperCase(),
         name: quote.price?.shortName || symbol.toUpperCase(),
-        earningsDate: quote.calendarEvents?.earnings?.earningsDate?.[0] || new Date().toISOString(),
-        exDividendDate: quote.calendarEvents?.exDividendDate || null,
+        earningsDate: formatYFDate(quote.calendarEvents?.earnings?.earningsDate?.[0]),
+        exDividendDate: formatYFDate(quote.calendarEvents?.exDividendDate),
         summary: {
           epsEstimate: quote.calendarEvents?.earnings?.earningsAverage || null,
           revenueEstimate: quote.calendarEvents?.earnings?.revenueAverage || null,
@@ -168,11 +185,12 @@ async function startServer() {
         };
       });
 
-      const lastValidQuote = [...quotes].reverse().find((q: any) => q.close != null);
+      // Find the most recent valid close price
+      const lastQuoteWithClose = [...quotes].reverse().find((q: any) => q.close != null);
       
       const result = {
         symbol,
-        currentPrice: lastValidQuote?.close ?? 0,
+        currentPrice: lastQuoteWithClose?.close ?? 0,
         data: data.slice(-250) 
       };
 

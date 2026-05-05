@@ -44,7 +44,19 @@ export default function TechnicalAnalysis({ initialSymbol = 'AAPL' }: { initialS
         return res.json();
       })
       .then(data => {
-        if (!data || !data.data || data.data.length === 0) throw new Error('No data');
+        if (!data || !data.data || data.data.length === 0) {
+          // If we have no chart data, try the quote fallback immediately
+          return fetch(`/api/quote/${ticker}`).then(q => q.json()).then(quoteData => {
+            setStockData({
+              symbol: ticker,
+              currentPrice: quoteData.currentPrice,
+              data: [] // Empty chart
+            });
+            setError('圖表資料暫不支援，顯示即時報價。');
+            setSymbol(ticker);
+            setLoading(false);
+          });
+        }
         
         setStockData(data);
         setSymbol(ticker);
@@ -60,9 +72,9 @@ export default function TechnicalAnalysis({ initialSymbol = 'AAPL' }: { initialS
             setStockData({
               symbol: ticker,
               currentPrice: quoteData.currentPrice,
-              data: [] // Empty chart, but correct price
+              data: [] 
             });
-            setError(`圖表資料載入失敗，顯示即時報價。`);
+            setError('圖表資料載入失敗，顯示即時報價。');
           } else {
             throw new Error('Quote fallback failed');
           }
