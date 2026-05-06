@@ -1,6 +1,6 @@
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { yahooFinance, formatYFDate } from './_helpers';
+import { yahooFinance, formatYFDate } from './_helpers.js';
 
 let cache: { data: any; ts: number } | null = null;
 const CACHE_TTL = 600_000; // 10 mins
