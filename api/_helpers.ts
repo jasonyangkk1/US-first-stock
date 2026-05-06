@@ -1,7 +1,7 @@
 
-import yahooFinance from 'yahoo-finance2';
+import yf from 'yahoo-finance2';
 
-export const yahooFinance = yahooFinance;
+export const yahooFinance = yf;
 
 export const formatYFDate = (d: any) => {
   if (!d) return null;
