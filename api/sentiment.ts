@@ -3,6 +3,7 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { yahooFinance } from './_helpers';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
+  if (req.method === 'OPTIONS') return res.status(200).end();
   try {
     const cnnPromise = fetch('https://production.dataviz.cnn.io/index/fearandgreed/graphdata', {
       headers: { 'User-Agent': 'Mozilla/5.0', 'Referer': 'https://www.cnn.com/markets/fear-and-greed' }

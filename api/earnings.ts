@@ -6,6 +6,7 @@ let cache: { data: any; ts: number } | null = null;
 const CACHE_TTL = 600_000; // 10 mins
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
+  if (req.method === 'OPTIONS') return res.status(200).end();
   if (req.method !== 'GET') return res.status(405).end();
 
   if (cache && Date.now() - cache.ts < CACHE_TTL) {
