@@ -1,5 +1,12 @@
 {
   "version": 2,
+  "functions": {
+    "api/earnings.ts": { "maxDuration": 60 },
+    "api/stock/[symbol].ts": { "maxDuration": 30 },
+    "api/quote/[symbol].ts": { "maxDuration": 15 },
+    "api/earnings/[symbol].ts": { "maxDuration": 30 },
+    "api/sentiment.ts": { "maxDuration": 30 }
+  },
   "headers": [
     {
       "source": "/api/(.*)",

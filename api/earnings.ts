@@ -16,7 +16,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const symbols = ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META', 'TSLA', 'NVDA'];
   
   try {
-    const results = await Promise.all(symbols.map(async (symbol) => {
+    const results = [];
+    for (const symbol of symbols) {
       try {
         const quote: any = await yahooFinance.quoteSummary(symbol, {
           modules: ['calendarEvents', 'price', 'earnings', 'financialData', 'defaultKeyStatistics']
@@ -28,7 +29,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         const prevEarnings = quarterlyEarnings[quarterlyEarnings.length - 2] || null;
         const prevFinancials = quarterlyFinancials[quarterlyFinancials.length - 2] || null;
 
-        return {
+        results.push({
           symbol,
           name: quote.price?.shortName || symbol,
           earningsDate: formatYFDate(quote.calendarEvents?.earnings?.earningsDate?.[0]),
@@ -45,11 +46,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             growth: quote.financialData?.revenueGrowth || null,
             epsTTM: quote.defaultKeyStatistics?.trailingEps || null,
           }
-        };
-      } catch (e) {
-        return { symbol, name: symbol, earningsDate: new Date().toISOString(), exDividendDate: null, summary: null };
+        });
+      } catch (e: any) {
+        console.error(`[earnings] Failed to fetch ${symbol}:`, e?.message || e);
+        results.push({ symbol, name: symbol, earningsDate: new Date().toISOString(), exDividendDate: null, summary: null });
       }
-    }));
+      // Small delay between requests to avoid rate limits
+      await new Promise(r => setTimeout(r, 200));
+    }
     
     cache = { data: results, ts: Date.now() };
     res.json(results);

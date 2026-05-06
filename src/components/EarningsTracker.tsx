@@ -43,7 +43,11 @@ export default function EarningsTracker({ onSelectStock }: { onSelectStock?: (sy
         return data.map((item: any) => {
           if (!item.summary) {
             const fallback = getFallbackFor(item.symbol);
-            return { ...item, ...fallback };
+            return { 
+              ...item, 
+              // Keep real name/date if they exist from backend, only merge summary
+              summary: fallback.summary 
+            };
           }
           return item;
         });
