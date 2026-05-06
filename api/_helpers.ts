@@ -1,10 +1,9 @@
 
-import yf from 'yahoo-finance2';
+import YahooFinance from 'yahoo-finance2';
 
-// Prevent notices in serverless environment
-yf.suppressNotices(['ripHistorical', 'yahooSurvey']);
+const instance = new YahooFinance({ suppressNotices: ['ripHistorical', 'yahooSurvey'] });
 
-export const yahooFinance = yf;
+export const yahooFinance = instance;
 
 export const formatYFDate = (d: any) => {
   if (!d) return null;
