@@ -288,7 +288,128 @@ async function startServer() {
     }
   });
 
-  // 4. Factors / Algo selection
+  // 4. Macro Indicators (NFP, ADP, CPI)
+  app.get('/api/macro', async (req, res) => {
+    const cacheKey = 'macro_indicators';
+    const cached = cache.get(cacheKey);
+    if (cached) return res.json(cached);
+
+    const FRED_API_KEY = process.env.FRED_API_KEY;
+    const FRED_BASE_URL = 'https://api.stlouisfed.org/fred/series/observations';
+
+    if (!FRED_API_KEY) {
+      return res.json({ 
+        error: 'FRED_API_KEY not configured',
+        instruction: 'Please set FRED_API_KEY in your environment variables.'
+      });
+    }
+
+    const SERIES = {
+      NFP: 'PAYEMS',
+      ADP: 'ADPWNUSNERSA',
+      CPI: 'CPIAUCSL'
+    };
+
+    const fetchFred = async (seriesId: string, limit = 16) => {
+      try {
+        const url = `${FRED_BASE_URL}?series_id=${seriesId}&api_key=${FRED_API_KEY}&file_type=json&sort_order=desc&limit=${limit}`;
+        const response = await fetch(url);
+        if (!response.ok) return null;
+        const data: any = await response.json();
+        return (data.observations || [])
+          .filter((o: any) => o.value !== '.')
+          .map((o: any) => ({ ...o, value: Number(o.value) }));
+      } catch (e) {
+        return null;
+      }
+    };
+
+    const getNthDayOfMonth = (year: number, month: number, nth: number, dayOfWeek: number) => {
+      const date = new Date(year, month, 1);
+      let count = 0;
+      while (date.getMonth() === month) {
+        if (date.getDay() === dayOfWeek) {
+          count++;
+          if (count === nth) return new Date(date);
+        }
+        date.setDate(date.getDate() + 1);
+      }
+      return null;
+    };
+
+    const getNextReleaseDates = () => {
+      const now = new Date();
+      const year = now.getFullYear();
+      const month = now.getMonth();
+      const checkPassed = (d: Date, hourUTC: number, minUTC = 0) => {
+        const releaseTime = d.getTime() + hourUTC * 3600000 + minUTC * 60000;
+        return releaseTime < now.getTime();
+      };
+
+      let adp = getNthDayOfMonth(year, month, 1, 3);
+      if (adp && checkPassed(adp, 13, 15)) adp = getNthDayOfMonth(year, month + 1, 1, 3);
+      
+      let nfp = getNthDayOfMonth(year, month, 1, 5);
+      if (nfp && checkPassed(nfp, 13, 30)) nfp = getNthDayOfMonth(year, month + 1, 1, 5);
+
+      let cpi = getNthDayOfMonth(year, month, 2, 3);
+      if (cpi && checkPassed(cpi, 13, 30)) cpi = getNthDayOfMonth(year, month + 1, 2, 3);
+
+      const format = (d: Date | null, time: string) => d ? `${d.toISOString().split('T')[0]} ${time} (TPE)` : 'TBD';
+      return { adp: format(adp, '20:15'), nfp: format(nfp, '20:30'), cpi: format(cpi, '20:30') };
+    };
+
+    try {
+      const [nfpData, adpData, cpiData] = await Promise.all([
+        fetchFred(SERIES.NFP, 5),
+        fetchFred(SERIES.ADP, 5),
+        fetchFred(SERIES.CPI, 18)
+      ]);
+
+      const dates = getNextReleaseDates();
+      const validateRange = (val: number, min: number, max: number) => !isNaN(val) && val >= min && val <= max;
+
+      const nfpActualVal = (nfpData && nfpData.length >= 2) ? nfpData[0].value - nfpData[1].value : NaN;
+      const nfpPrevVal = (nfpData && nfpData.length >= 3) ? nfpData[1].value - nfpData[2].value : NaN;
+      const adpActualVal = (adpData && adpData.length >= 1) ? adpData[0].value : NaN;
+      const adpPrevVal = (adpData && adpData.length >= 2) ? adpData[1].value : NaN;
+      const cpiActualVal = (cpiData && cpiData.length >= 13) ? (cpiData[0].value / cpiData[12].value - 1) * 100 : NaN;
+      const cpiPrevVal = (cpiData && cpiData.length >= 14) ? (cpiData[1].value / cpiData[13].value - 1) * 100 : NaN;
+
+      const results = {
+        nfp: {
+          actual: validateRange(nfpActualVal, -500, 1500) ? `${Math.round(nfpActualVal)}K` : null,
+          previous: validateRange(nfpPrevVal, -500, 1500) ? `${Math.round(nfpPrevVal)}K` : null,
+          forecast: "145K",
+          nextRelease: dates.nfp,
+          lastUpdated: new Date().toISOString()
+        },
+        adp: {
+          actual: validateRange(adpActualVal, -500, 1000) ? `${Math.round(adpActualVal)}K` : null,
+          previous: validateRange(adpPrevVal, -500, 1000) ? `${Math.round(adpPrevVal)}K` : null,
+          forecast: "150K",
+          nextRelease: dates.adp,
+          lastUpdated: new Date().toISOString()
+        },
+        cpi: {
+          actual: validateRange(cpiActualVal, -5, 20) ? `${cpiActualVal.toFixed(1)}%` : null,
+          previous: validateRange(cpiPrevVal, -5, 20) ? `${cpiPrevVal.toFixed(1)}%` : null,
+          forecast: "3.4%",
+          nextRelease: dates.cpi,
+          lastUpdated: new Date().toISOString()
+        }
+      };
+
+      if (results.nfp.actual || results.adp.actual || results.cpi.actual) {
+        cache.set(cacheKey, results, 3600); // 1 hour cache
+      }
+      res.json(results);
+    } catch (err) {
+      res.status(500).json({ error: 'Failed to fetch macro data' });
+    }
+  });
+
+  // 5. Factors / Algo selection
   app.get('/api/factors', async (req, res) => {
     // Return a predefined set of "Factor" stocks calculated server-side
     // Momentum, Value, Quality (Filtered for Tech)

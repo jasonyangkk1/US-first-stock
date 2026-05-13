@@ -255,12 +255,12 @@ export default function MarketSentiment() {
                   {indicator.description}
                 </p>
 
-                <div className="grid grid-cols-3 gap-2 mb-6">
+                <div className="grid grid-cols-3 gap-2 mb-4">
                   <div className="bg-card-bg/40 p-2 rounded-lg border border-border-subtle/50 text-center">
                     <div className="text-[9px] text-text-dim/60 font-bold uppercase mb-1">Previous</div>
                     <div className="text-xs font-mono font-bold text-text-dim">{indicator.previous}</div>
                   </div>
-                  <div className="bg-brand/5 p-2 rounded-lg border border-brand/20 text-center ring-1 ring-brand/10">
+                  <div className="bg-brand/5 p-2 rounded-lg border border-brand/20 text-center ring-1 ring-brand/10 relative overflow-hidden group-hover:ring-brand/40 transition-all">
                     <div className="text-[9px] text-brand/80 font-bold uppercase mb-1">Actual</div>
                     <div className="text-sm font-mono font-bold text-brand">
                       {macroLoading ? '...' : indicator.actual}
@@ -270,6 +270,58 @@ export default function MarketSentiment() {
                     <div className="text-[9px] text-text-dim/60 font-bold uppercase mb-1">Forecast</div>
                     <div className="text-xs font-mono font-bold text-text-bright">{indicator.forecast}</div>
                   </div>
+                </div>
+
+                <div className="flex items-center gap-3 py-2 px-3 bg-card-bg/30 border border-border-subtle/50 rounded-lg mb-6">
+                  {(() => {
+                    const actualNum = parseFloat(indicator.actual || '0');
+                    const forecastNum = parseFloat(indicator.forecast || '0');
+                    const isCPI = indicator.id === 'cpi';
+                    
+                    let status = 'neutral';
+                    let statusColor = 'text-yellow-500';
+                    let bgColor = 'bg-yellow-500/10';
+                    let analysis = '符合預期';
+
+                    if (indicator.actual && indicator.forecast) {
+                      if (isCPI) {
+                        // CPI: Lower is better (Green), Higher is risky (Red)
+                        if (actualNum < forecastNum - 0.05) {
+                          status = 'positive';
+                          statusColor = 'text-emerald-500';
+                          bgColor = 'bg-emerald-500/10';
+                          analysis = '通膨降溫 (利多)';
+                        } else if (actualNum > forecastNum + 0.05) {
+                          status = 'negative';
+                          statusColor = 'text-rose-500';
+                          bgColor = 'bg-rose-500/10';
+                          analysis = '通膨過熱 (利空)';
+                        }
+                      } else {
+                        // Jobs: Higher is better (Green), Lower is risky (Red)
+                        if (actualNum > forecastNum + 10) {
+                          status = 'positive';
+                          statusColor = 'text-emerald-500';
+                          bgColor = 'bg-emerald-500/10';
+                          analysis = '就業強勁 (利多)';
+                        } else if (actualNum < forecastNum - 10) {
+                          status = 'negative';
+                          statusColor = 'text-rose-500';
+                          bgColor = 'bg-rose-500/10';
+                          analysis = '衰退疑慮 (利空)';
+                        }
+                      }
+                    }
+
+                    return (
+                      <>
+                        <div className={`w-2 h-2 rounded-full ${statusColor.replace('text-', 'bg-')} animate-pulse`} />
+                        <div className={`text-[10px] font-bold uppercase tracking-widest ${statusColor} py-0.5 px-2 rounded ${bgColor}`}>
+                          {analysis}
+                        </div>
+                      </>
+                    );
+                  })()}
                 </div>
                 
                 <div className="flex items-center gap-2 mt-auto pt-4 border-t border-border-subtle">
