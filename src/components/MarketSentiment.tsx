@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { motion } from 'motion/react';
-import { Gauge, Activity, AlertCircle, RefreshCcw, TrendingDown, TrendingUp } from 'lucide-react';
+import { Gauge, Activity, AlertCircle, RefreshCcw, TrendingDown, TrendingUp, Users, ShoppingBag, Clock, Calendar } from 'lucide-react';
 
 interface Sentiment {
   vix: {
@@ -14,9 +14,60 @@ interface Sentiment {
   };
 }
 
+interface EconomicIndicator {
+  id: string;
+  name: string;
+  label: string;
+  description: string;
+  nextRelease: string;
+  icon: React.ElementType;
+  previous: string;
+  actual: string;
+  forecast: string;
+}
+
+const ECONOMIC_INDICATORS: EconomicIndicator[] = [
+  {
+    id: 'adp',
+    name: '小非農 (ADP)',
+    label: 'ADP Employment',
+    description: '衡量美國私營部門就業人數的變化。由 ADP 研究院公布，通常在官方非農報告前兩天發布，被視為市場先行指標。',
+    nextRelease: '2026-06-03 20:15 (TPE)',
+    icon: Users,
+    previous: '184K',
+    actual: '109K',
+    forecast: '150K'
+  },
+  {
+    id: 'nfp',
+    name: '大非農 (NFP)',
+    label: 'Non-Farm Payrolls',
+    description: '美國非農業就業人數及失業率報告。這是衡量美國經濟健康狀況最重要的宏觀指標之一，直接影響聯準會的利率政策。',
+    nextRelease: '2026-06-05 20:30 (TPE)',
+    icon: Activity,
+    previous: '185K',
+    actual: '115K',
+    forecast: '145K'
+  },
+  {
+    id: 'cpi',
+    name: '消費者物價指數 (CPI)',
+    label: 'US Consumer Price Index',
+    description: '衡量美國通膨壓力的核心數據。反映消費者購買商品和服務的價格變化，高於預計的 CPI 通常會強化市場對升息的預期。',
+    nextRelease: '2026-06-10 20:30 (TPE)',
+    icon: ShoppingBag,
+    previous: '3.5%',
+    actual: '3.3%',
+    forecast: '3.4%'
+  }
+];
+
 export default function MarketSentiment() {
   const [sentiment, setSentiment] = useState<Sentiment | null>(null);
+  const [macroData, setMacroData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
+  const [macroLoading, setMacroLoading] = useState(true);
+  const [error, setError] = useState(false);
 
   useEffect(() => {
     const fetchSentiment = async () => {
@@ -28,7 +79,6 @@ export default function MarketSentiment() {
         setSentiment(data);
       } catch (error) {
         console.error('Error fetching sentiment:', error);
-        // Absolute fallback to prevent blank page
         setSentiment({
           vix: { value: 14.2, change: -1.2 },
           fearAndGreed: { value: 58, label: 'Greed', updated: new Date().toISOString() }
@@ -38,7 +88,21 @@ export default function MarketSentiment() {
       }
     };
 
+    const fetchMacro = async () => {
+      try {
+        const res = await fetch('/api/macro');
+        if (!res.ok) throw new Error('Macro API failed');
+        const data = await res.json();
+        setMacroData(data);
+      } catch (e) {
+        console.error('Error fetching macroData:', e);
+      } finally {
+        setMacroLoading(false);
+      }
+    };
+
     fetchSentiment();
+    fetchMacro();
   }, []);
 
   if (loading || !sentiment) {
@@ -46,6 +110,7 @@ export default function MarketSentiment() {
       <div className="flex flex-col gap-6 animate-pulse">
         <div className="h-48 bg-card-bg border border-border-subtle rounded-xl" />
         <div className="h-32 bg-card-bg border border-border-subtle rounded-xl" />
+        <div className="h-64 bg-card-bg border border-border-subtle rounded-xl" />
       </div>
     );
   }
@@ -55,6 +120,19 @@ export default function MarketSentiment() {
 
   // Needle angle: 0 value = -90deg, 100 value = 90deg, 50 value = 0deg
   const needleRotation = (fg / 100) * 180 - 90;
+
+  const indicators = ECONOMIC_INDICATORS.map(ind => {
+    if (!macroData) return { ...ind, isStatic: true };
+    const dynamic = macroData[ind.id];
+    if (!dynamic || !dynamic.actual) return { ...ind, isStatic: true };
+    return {
+      ...ind,
+      actual: dynamic.actual,
+      previous: dynamic.previous || ind.previous,
+      nextRelease: dynamic.nextRelease || ind.nextRelease,
+      isStatic: false
+    };
+  });
 
   return (
     <div className="flex flex-col gap-6">
@@ -139,9 +217,76 @@ export default function MarketSentiment() {
         </section>
       </div>
 
+      <section className="sleek-card p-6">
+        <div className="flex items-center justify-between mb-6">
+          <div className="card-title m-0">關鍵經濟指標預告</div>
+          <div className="flex items-center gap-2 text-[10px] text-brand font-bold uppercase tracking-widest bg-brand/10 px-3 py-1 rounded-full border border-brand/20">
+            <Clock className="w-3 h-3" />
+            Macro Forecast
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+          {indicators.map((indicator) => {
+            const Icon = indicator.icon;
+            return (
+              <div 
+                key={indicator.id}
+                className="bg-dashboard-bg/50 border border-border-subtle p-5 rounded-xl hover:border-brand/40 transition-all group relative"
+              >
+                {indicator.isStatic && (
+                  <div className="absolute top-3 right-3 text-[8px] font-bold text-text-dim/40 border border-border-subtle px-1.5 py-0.5 rounded uppercase">
+                    Static
+                  </div>
+                )}
+                <div className="flex items-start justify-between mb-4">
+                  <div className="p-2 bg-brand/10 rounded-lg group-hover:bg-brand/20 transition-colors">
+                    <Icon className="w-5 h-5 text-brand" />
+                  </div>
+                  <div className="text-[10px] font-bold text-text-dim/60 uppercase tracking-widest border-b border-border-subtle pb-1">
+                    Upcoming
+                  </div>
+                </div>
+                
+                <h3 className="text-sm font-bold text-text-bright mb-1 tracking-tight">{indicator.name}</h3>
+                <p className="text-[10px] text-brand/80 font-bold uppercase tracking-wider mb-3">{indicator.label}</p>
+                
+                <p className="text-xs text-text-dim leading-relaxed mb-4 font-medium line-clamp-3">
+                  {indicator.description}
+                </p>
+
+                <div className="grid grid-cols-3 gap-2 mb-6">
+                  <div className="bg-card-bg/40 p-2 rounded-lg border border-border-subtle/50 text-center">
+                    <div className="text-[9px] text-text-dim/60 font-bold uppercase mb-1">Previous</div>
+                    <div className="text-xs font-mono font-bold text-text-dim">{indicator.previous}</div>
+                  </div>
+                  <div className="bg-brand/5 p-2 rounded-lg border border-brand/20 text-center ring-1 ring-brand/10">
+                    <div className="text-[9px] text-brand/80 font-bold uppercase mb-1">Actual</div>
+                    <div className="text-sm font-mono font-bold text-brand">
+                      {macroLoading ? '...' : indicator.actual}
+                    </div>
+                  </div>
+                  <div className="bg-card-bg/40 p-2 rounded-lg border border-border-subtle/50 text-center">
+                    <div className="text-[9px] text-text-dim/60 font-bold uppercase mb-1">Forecast</div>
+                    <div className="text-xs font-mono font-bold text-text-bright">{indicator.forecast}</div>
+                  </div>
+                </div>
+                
+                <div className="flex items-center gap-2 mt-auto pt-4 border-t border-border-subtle">
+                  <Calendar className="w-3.5 h-3.5 text-brand" />
+                  <span className="text-[11px] font-mono font-bold text-text-bright">
+                    {indicator.nextRelease}
+                  </span>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </section>
+
       <div className="sleek-card border-dashed bg-transparent items-center text-center">
         <p className="text-xs text-text-dim leading-relaxed max-w-lg">
-          Sentiment gauges are contrarian indicators. Extreme Greed often signals a top, while Extreme Fear often signals a bottom. Current regime is stability-focused.
+          宏觀經濟指標是市場波動的主要驅動力。大非農與 CPI 對利率預期有決定性影響，建議在數據發布前後保持機動艙位管理。
         </p>
         <button 
           onClick={() => window.location.reload()}

@@ -5,7 +5,8 @@
     "api/stock/[symbol].ts": { "maxDuration": 30 },
     "api/quote/[symbol].ts": { "maxDuration": 15 },
     "api/earnings/[symbol].ts": { "maxDuration": 30 },
-    "api/sentiment.ts": { "maxDuration": 30 }
+    "api/sentiment.ts": { "maxDuration": 30 },
+    "api/macro.ts": { "maxDuration": 30 }
   },
   "headers": [
     {
