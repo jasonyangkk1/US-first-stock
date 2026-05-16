@@ -444,13 +444,14 @@ async function startServer() {
         const startDate = new Date();
         startDate.setMonth(startDate.getMonth() - monthsBack);
         const observationStart = startDate.toISOString().split('T')[0];
-        const url = `${FRED_BASE_URL}?series_id=${seriesId}&api_key=${FRED_API_KEY}&file_type=json&sort_order=asc&observation_start=${observationStart}&frequency=m`;
+        const url = `${FRED_BASE_URL}?series_id=${seriesId}&api_key=${FRED_API_KEY}&file_type=json&sort_order=asc&observation_start=${observationStart}`;
         const res = await fetch(url);
         if (!res.ok) return [];
         const data: any = await res.json();
-        return (data.observations || [])
+        const daily = (data.observations || [])
           .filter((o: any) => o.value !== '.')
           .map((o: any) => ({ value: Number(o.value), date: o.date }));
+        return sampleMonthlyLast(daily);
       } catch (e) {
         return [];
       }
@@ -460,6 +461,47 @@ async function startServer() {
       if (history.length === 0) return 50;
       const below = history.filter(h => h.value <= currentValue).length;
       return Math.round((below / history.length) * 100);
+    }
+
+    function mergeChartData(
+      data2y: Array<{ value: number; date: string }>,
+      data10y: Array<{ value: number; date: string }>,
+      data30y: Array<{ value: number; date: string }>
+    ) {
+      const lookup2y = Object.fromEntries(data2y.map(d => [d.date.slice(0, 7), d.value]));
+      const lookup30y = Object.fromEntries(data30y.map(d => [d.date.slice(0, 7), d.value]));
+      
+      const result = data10y.map(d => {
+        const monthKey = d.date.slice(0, 7);
+        return {
+          date: monthKey,
+          yield2y: lookup2y[monthKey] ?? null,
+          yield10y: d.value,
+          yield30y: lookup30y[monthKey] ?? null,
+        };
+      });
+      
+      return {
+        dates: result.map(r => r.date),
+        yield2y: result.map(r => r.yield2y),
+        yield10y: result.map(r => r.yield10y),
+        yield30y: result.map(r => r.yield30y),
+      };
+    }
+
+    function sampleMonthlyLast(
+      daily: Array<{ value: number; date: string }>
+    ): Array<{ value: number; date: string }> {
+      if (daily.length === 0) return [];
+      
+      const byMonth: Record<string, { value: number; date: string }> = {};
+      
+      for (const point of daily) {
+        const monthKey = point.date.slice(0, 7); // "YYYY-MM"
+        byMonth[monthKey] = point; // Keep latest in the month
+      }
+      
+      return Object.values(byMonth).sort((a, b) => a.date.localeCompare(b.date));
     }
 
     function getHistoricalContext(yield2y: number, yield10y: number, yield30y: number | null, spread_2_10: number) {
@@ -623,12 +665,14 @@ async function startServer() {
     }
 
     try {
-      const [y2, y10, y30, history20y, chartHistory] = await Promise.all([
+      const [y2, y10, y30, history20y, chart2y, chart10y, chart30y] = await Promise.all([
         fetchFredSeries('DGS2'),
         fetchFredSeries('DGS10'),
         fetchFredSeries('DGS30'),
         fetchFredHistory('DGS10', 240),
-        fetchFredHistory('DGS10', 24)
+        fetchFredHistory('DGS2', 24),
+        fetchFredHistory('DGS10', 24),
+        fetchFredHistory('DGS30', 24)
       ]);
 
       if (!y2 || !y10) {
@@ -666,6 +710,27 @@ async function startServer() {
       const percentile20y = calculatePercentile(history20y, y10.value);
       const percentileNote = `當前 10Y 殖利率高於過去 20 年中 ${percentile20y}% 的時間，處於歷史${percentile20y > 80 ? '極高' : percentile20y > 60 ? '偏高' : percentile20y > 40 ? '中位' : '偏低'}水位`;
 
+      const mergedCharts = mergeChartData(chart2y, chart10y, chart30y);
+
+      // Align chart last point with live data
+      if (y10 && mergedCharts.yield10y.length > 0) {
+        const lastIdx = mergedCharts.yield10y.length - 1;
+        const chartLast10y = mergedCharts.yield10y[lastIdx];
+        if (chartLast10y && Math.abs(chartLast10y - y10.value) > 0.01) {
+          const todayMonthMonth = y10.date.slice(0, 7);
+          if (todayMonthMonth !== mergedCharts.dates[lastIdx]) {
+            mergedCharts.dates.push(todayMonthMonth);
+            mergedCharts.yield2y.push(y2?.value ?? null);
+            mergedCharts.yield10y.push(y10.value);
+            mergedCharts.yield30y.push(y30?.value ?? null);
+          } else {
+            mergedCharts.yield10y[lastIdx] = y10.value;
+            if (y2) mergedCharts.yield2y[lastIdx] = y2.value;
+            if (y30) mergedCharts.yield30y[lastIdx] = y30.value;
+          }
+        }
+      }
+
       const results = {
         yield2y: y2.value,
         yield10y: y10.value,
@@ -693,7 +758,7 @@ async function startServer() {
           y30 ? y30.value : null,
           spread_2_10
         ),
-        chartData: chartHistory
+        chartData: mergedCharts
       };
 
       cache.set(cacheKey, results, 600);

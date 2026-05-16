@@ -477,83 +477,119 @@ export default function MarketSentiment() {
                       </p>
                     </div>
 
-                    {/* 過去24個月走勢小圖 */}
-                    {yieldsData.chartData?.length > 0 && (
+                    {/* 殖利率走勢對比圖 */}
+                    {yieldsData.chartData?.dates?.length > 0 && (
                       <div className="bg-card-bg/30 rounded-xl p-5 border border-border-subtle">
-                        <div className="text-[10px] text-text-dim uppercase font-bold tracking-widest mb-4 flex items-center gap-2">
+                        <div className="text-[10px] text-text-dim uppercase font-bold tracking-widest mb-3 flex items-center gap-2">
                           <Activity className="w-3 h-3" />
-                          10Y 殖利率走勢 (近 2 年)
+                          美國公債殖利率走勢 (近 2 年)
                         </div>
                         
-                        <div className="h-24 w-full relative">
+                        {/* 圖例 */}
+                        <div className="flex gap-4 mb-4">
+                          <div className="flex items-center gap-1.5">
+                            <div className="w-4 h-0.5 bg-orange-500 rounded"></div>
+                            <span className="text-[9px] text-text-secondary font-bold">2Y</span>
+                          </div>
+                          <div className="flex items-center gap-1.5">
+                            <div className="w-4 h-0.5 bg-blue-500 rounded"></div>
+                            <span className="text-[9px] text-text-secondary font-bold">10Y</span>
+                          </div>
+                          <div className="flex items-center gap-1.5">
+                            <div className="w-4 h-0.5 bg-purple-500 rounded"></div>
+                            <span className="text-[9px] text-text-secondary font-bold">30Y</span>
+                          </div>
+                        </div>
+                        
+                        <div className="h-32 w-full relative">
                           {(() => {
-                            const values = yieldsData.chartData.map((d: any) => d.value);
-                            const min = Math.min(...values);
-                            const max = Math.max(...values);
-                            const range = max - min || 1;
-                            const padding = range * 0.15;
-                            const yMin = min - padding;
-                            const yMax = max + padding;
+                            const { dates, yield2y, yield10y, yield30y } = yieldsData.chartData;
+                            
+                            // 計算整體 min/max（忽略 null 值）
+                            const allValues = [...yield2y, ...yield10y, ...yield30y].filter(v => v !== null) as number[];
+                            const minVal = Math.min(...allValues);
+                            const maxVal = Math.max(...allValues);
+                            const range = maxVal - minVal || 0.1;
+                            const pad = range * 0.15;
+                            const yMin = minVal - pad;
+                            const yMax = maxVal + pad;
                             const yRange = yMax - yMin;
 
-                            const points = yieldsData.chartData.map((d: any, i: number) => {
-                              const x = (i / (yieldsData.chartData.length - 1)) * 400;
-                              const y = 80 - ((d.value - yMin) / yRange) * 80;
-                              return { x, y, val: d.value, date: d.date };
-                            });
+                            const toY = (v: number) => 100 - ((v - yMin) / yRange) * 100;
+                            const toX = (i: number) => (i / (dates.length - 1)) * 400;
 
-                            const polylinePoints = points.map((p: any) => `${p.x},${p.y}`).join(' ');
-                            const areaPoints = `0,80 ${polylinePoints} 400,80`;
+                            // 為每條線產生 polyline points（跳過 null）
+                            const buildPoints = (arr: (number | null)[]) =>
+                              arr
+                                .map((v, i) => v !== null ? `${toX(i)},${toY(v)}` : null)
+                                .filter(v => v !== null)
+                                .join(' ');
 
-                            const maxVal = Math.max(...values);
-                            const minVal = Math.min(...values);
-                            const maxPoint = points.find((p: any) => p.val === maxVal);
-                            const minPoint = points.find((p: any) => p.val === minVal);
-                            const lastPoint = points[points.length - 1];
+                            const points2y = buildPoints(yield2y);
+                            const points10y = buildPoints(yield10y);
+                            const points30y = buildPoints(yield30y);
+                            
+                            const area10y = `0,100 ${points10y} 400,100`;
+
+                            const lastNonNull = (arr: (number | null)[]) => {
+                              for (let i = arr.length - 1; i >= 0; i--) {
+                                if (arr[i] !== null) return { value: arr[i] as number, i };
+                              }
+                              return null;
+                            };
+
+                            const last2y = lastNonNull(yield2y);
+                            const last10y = lastNonNull(yield10y);
+                            const last30y = lastNonNull(yield30y);
 
                             return (
-                              <svg viewBox="0 0 400 80" className="w-full h-full overflow-visible" preserveAspectRatio="none">
+                              <svg viewBox="0 0 400 100" className="w-full h-full overflow-visible" preserveAspectRatio="none">
                                 <defs>
                                   <linearGradient id="chartFill" x1="0%" y1="0%" x2="0%" y2="100%">
-                                    <stop offset="0%" stopColor="#3b82f6" stopOpacity="0.2" />
+                                    <stop offset="0%" stopColor="#3b82f6" stopOpacity="0.15" />
                                     <stop offset="100%" stopColor="#3b82f6" stopOpacity="0" />
                                   </linearGradient>
                                 </defs>
-                                <polyline 
-                                  points={polylinePoints} 
-                                  fill="none" 
-                                  stroke="#3b82f6" 
-                                  strokeWidth="2.5" 
-                                  strokeLinecap="round" 
-                                  strokeLinejoin="round" 
-                                />
-                                <polygon points={areaPoints} fill="url(#chartFill)" />
                                 
-                                {maxPoint && (
+                                <polygon points={area10y} fill="url(#chartFill)" />
+                                
+                                <polyline points={points30y} fill="none" stroke="#a855f7" strokeWidth="1.5" strokeDasharray="4,2" />
+                                <polyline points={points10y} fill="none" stroke="#3b82f6" strokeWidth="2.5" />
+                                <polyline points={points2y} fill="none" stroke="#f97316" strokeWidth="1.5" />
+                                
+                                {last2y && (
                                   <g>
-                                    <circle cx={maxPoint.x} cy={maxPoint.y} r="3" fill="#fb7185" />
-                                    <text x={maxPoint.x} y={maxPoint.y - 8} fontSize="10" fontWeight="bold" fill="#fb7185" textAnchor="middle">{maxPoint.val}%</text>
+                                    <circle cx={toX(last2y.i)} cy={toY(last2y.value)} r="3" fill="#f97316" />
+                                    <text x={toX(last2y.i) - 5} y={toY(last2y.value) - 4} fontSize="8" fontWeight="bold" fill="#f97316" textAnchor="end">
+                                      {(yieldsData.yield2y ?? last2y.value).toFixed(2)}%
+                                    </text>
                                   </g>
                                 )}
-                                {minPoint && minPoint !== maxPoint && (
+                                {last10y && (
                                   <g>
-                                    <circle cx={minPoint.x} cy={minPoint.y} r="3" fill="#34d399" />
-                                    <text x={minPoint.x} y={minPoint.y + 14} fontSize="10" fontWeight="bold" fill="#34d399" textAnchor="middle">{minPoint.val}%</text>
+                                    <circle cx={toX(last10y.i)} cy={toY(last10y.value)} r="4" fill="#3b82f6" />
+                                    <text x={toX(last10y.i)} y={toY(last10y.value) - 8} fontSize="9" fontWeight="bold" fill="#3b82f6" textAnchor="middle">
+                                      {(yieldsData.yield10y ?? last10y.value).toFixed(2)}%
+                                    </text>
                                   </g>
                                 )}
-                                <g>
-                                  <circle cx={lastPoint.x} cy={lastPoint.y} r="5" fill="#3b82f6" className="animate-pulse" />
-                                  <circle cx={lastPoint.x} cy={lastPoint.y} r="3" fill="white" />
-                                </g>
+                                {last30y && (
+                                  <g>
+                                    <circle cx={toX(last30y.i)} cy={toY(last30y.value)} r="3" fill="#a855f7" />
+                                    <text x={toX(last30y.i) + 5} y={toY(last30y.value) - 4} fontSize="8" fontWeight="bold" fill="#a855f7" textAnchor="start">
+                                      {(yieldsData.yield30y ?? last30y.value).toFixed(2)}%
+                                    </text>
+                                  </g>
+                                )}
                               </svg>
                             );
                           })()}
                         </div>
                         
                         <div className="flex justify-between text-[9px] text-text-dim mt-4 font-mono">
-                          <span>{yieldsData.chartData[0]?.date?.slice(0, 7)}</span>
-                          <span className="text-text-secondary">Monthly Data</span>
-                          <span>{yieldsData.chartData[yieldsData.chartData.length - 1]?.date?.slice(0, 7)}</span>
+                          <span>{yieldsData.chartData.dates[0]?.slice(0, 7)}</span>
+                          <span className="text-text-secondary">Summary (2Y/10Y/30Y)</span>
+                          <span>{yieldsData.chartData.dates[yieldsData.chartData.dates.length - 1]?.slice(0, 7)}</span>
                         </div>
                       </div>
                     )}
