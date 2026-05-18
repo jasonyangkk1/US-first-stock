@@ -35,7 +35,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method === 'OPTIONS') return res.status(200).end();
   if (req.method !== 'GET') return res.status(405).end();
   
-  if (cache && Date.now() - cache.ts < CACHE_TTL && cache.version === CACHE_VERSION) {
+  // 臨時：強制繞過 cache（部署後確認正常可移除）
+  const forceRefresh = req.query.nocache === '1';
+
+  if (!forceRefresh && cache && Date.now() - cache.ts < CACHE_TTL && cache.version === CACHE_VERSION) {
     return res.json(cache.data);
   }
   
@@ -181,6 +184,22 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       top10AboveMa50Pct,
       top10AboveMa200Pct,
       lastUpdated: new Date().toISOString(),
+      _debug: {
+        cacheVersion: CACHE_VERSION,
+        computedAt: new Date().toISOString(),
+        rawValues: {
+          aboveMa200Count,
+          validCount,
+          top10AboveMa200Pct,
+          qqqReturn52w,
+          rspReturn52w,
+          concentrationPremium,
+          stockMa200: (topStocks as any[]).map(s => ({
+            symbol: s.symbol,
+            aboveMa200: s.aboveMa200
+          }))
+        }
+      }
     };
     
     cache = { data: result, ts: Date.now(), version: CACHE_VERSION };
