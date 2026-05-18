@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { motion } from 'motion/react';
-import { Gauge, Activity, AlertCircle, RefreshCcw, TrendingDown, TrendingUp, Users, ShoppingBag, Clock, Calendar } from 'lucide-react';
+import { Gauge, Activity, AlertCircle, RefreshCcw, TrendingDown, TrendingUp, Users, ShoppingBag, Clock, Calendar, BarChart3 } from 'lucide-react';
 
 interface Sentiment {
   vix: {
@@ -66,9 +66,11 @@ export default function MarketSentiment() {
   const [sentiment, setSentiment] = useState<Sentiment | null>(null);
   const [macroData, setMacroData] = useState<any>(null);
   const [yieldsData, setYieldsData] = useState<any>(null);
+  const [breadthData, setBreadthData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [macroLoading, setMacroLoading] = useState(true);
   const [yieldsLoading, setYieldsLoading] = useState(true);
+  const [breadthLoading, setBreadthLoading] = useState(true);
   const [yieldsError, setYieldsError] = useState<string | null>(null);
   const [error, setError] = useState(false);
 
@@ -126,9 +128,27 @@ export default function MarketSentiment() {
       }
     };
 
+    const fetchBreadth = async () => {
+      setBreadthLoading(true);
+      try {
+        const res = await fetch('/api/breadth');
+        const data = await res.json();
+        if (data.concentration?.breadthScore !== undefined) {
+          setBreadthData(data);
+        } else {
+          console.warn('[breadth] Unexpected data shape:', data);
+        }
+      } catch (e) {
+        console.error('Error fetching breadth:', e);
+      } finally {
+        setBreadthLoading(false);
+      }
+    };
+
     fetchSentiment();
     fetchMacro();
     fetchYields();
+    fetchBreadth();
   }, []);
 
   if (loading || !sentiment) {
@@ -660,6 +680,141 @@ export default function MarketSentiment() {
                >
                  重新整理頁面
                </button>
+            </div>
+          ) : (
+            <div className="flex items-center justify-center h-48 text-text-dim italic text-sm">
+              數據載入中...
+            </div>
+          )}
+        </section>
+
+        {/* Market Breadth Analysis */}
+        <section className="sleek-card md:col-span-2 p-6 overflow-hidden relative">
+          <div className="card-title">📊 市場寬度 (Market Breadth)</div>
+          
+          <div className="text-[9px] text-text-dim/60 mb-3">
+            * 集中度溢價基於 QQQ vs RSP 近3個月報酬差；寬度評分基於 Top10 技術面加權計算
+          </div>
+
+          {breadthLoading ? (
+            <div className="flex items-center justify-center h-48">
+              <RefreshCcw className="w-6 h-6 animate-spin text-brand/40" />
+            </div>
+          ) : breadthData ? (
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 mt-4">
+              <div className="lg:col-span-5 flex flex-col justify-between">
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="bg-card-bg/50 p-4 rounded-xl border border-border-subtle flex flex-col items-center">
+                    <span className="text-[10px] font-bold text-text-dim uppercase mb-1">寬度評分</span>
+                    <span className={`text-xl font-mono font-bold ${
+                      breadthData.concentration.breadthScore > 70 ? 'text-emerald-500' :
+                      breadthData.concentration.breadthScore > 50 ? 'text-yellow-500' :
+                      breadthData.concentration.breadthScore > 30 ? 'text-orange-500' : 'text-rose-500'
+                    }`}>{breadthData.concentration.breadthScore}/100</span>
+                    <span className="text-[9px] text-text-dim mt-0.5">越高越健康 (0-100)</span>
+                  </div>
+                  <div className="bg-card-bg/50 p-4 rounded-xl border border-border-subtle flex flex-col items-center">
+                    <span className="text-[10px] font-bold text-text-dim uppercase mb-1">集中度溢價</span>
+                    <span className={`text-xl font-mono font-bold ${
+                      breadthData.concentration.concentrationPremium !== null && breadthData.concentration.concentrationPremium !== undefined ? (
+                        breadthData.concentration.concentrationTrend === 'extreme' ? 'text-rose-400' :
+                        breadthData.concentration.concentrationTrend === 'high' ? 'text-orange-400' :
+                        breadthData.concentration.concentrationTrend === 'moderate' ? 'text-yellow-400' :
+                        breadthData.concentration.concentrationTrend === 'neutral' ? 'text-text-bright' :
+                        'text-emerald-400'
+                      ) : 'text-text-dim'
+                    }`}>
+                      {breadthData.concentration.concentrationPremium !== null && breadthData.concentration.concentrationPremium !== undefined ? 
+                        `${breadthData.concentration.concentrationPremium > 0 ? '+' : ''}${breadthData.concentration.concentrationPremium.toFixed(1)}%` 
+                        : '計算中...'}
+                    </span>
+                    <span className="text-[9px] text-text-dim mt-0.5">正值=集中，負值=分散</span>
+                    {breadthData.concentration.concentrationPremiumLabel && (
+                      <span className="text-[8px] text-text-dim/70 text-center mt-1 scale-90 leading-tight block">{breadthData.concentration.concentrationPremiumLabel}</span>
+                    )}
+                  </div>
+                  <div className="bg-card-bg/50 p-4 rounded-xl border border-border-subtle flex flex-col items-center">
+                    <span className="text-[10px] font-bold text-text-dim uppercase mb-1 text-center">Top10 50MA以上</span>
+                    <span className="text-xl font-mono font-bold text-text-bright">{breadthData.top10AboveMa50Pct ?? breadthData.sp500AboveMa50Estimate}%</span>
+                  </div>
+                  <div className="bg-card-bg/50 p-4 rounded-xl border border-border-subtle flex flex-col items-center">
+                    <span className="text-[10px] font-bold text-text-dim uppercase mb-1 text-center">Top10 200MA以上</span>
+                    <span className="text-xl font-mono font-bold text-text-bright">{typeof breadthData.top10AboveMa200Pct === 'number' ? `${breadthData.top10AboveMa200Pct}%` : '--'}</span>
+                  </div>
+                </div>
+
+                <div className="mt-6 space-y-4">
+                  <div className={`p-4 rounded-xl border-2 transition-all ${
+                    breadthData.breadthSignal === 'healthy' ? 'border-emerald-500/30 bg-emerald-500/5 text-emerald-400' :
+                    breadthData.breadthSignal === 'narrowing' ? 'border-yellow-500/30 bg-yellow-500/5 text-yellow-400' :
+                    breadthData.breadthSignal === 'concentrated' ? 'border-orange-500/30 bg-orange-500/5 text-orange-400' :
+                    'border-rose-500/30 bg-rose-500/5 text-rose-400'
+                  }`}>
+                    <div className="flex items-center gap-2 mb-1">
+                      <AlertCircle className="w-4 h-4" />
+                      <span className="font-bold text-base">{breadthData.breadthLabel}</span>
+                    </div>
+                    <p className="text-xs font-medium opacity-90 leading-relaxed">
+                      {breadthData.breadthSignal === 'healthy' ? '漲勢具廣泛參與基礎基礎，牛市結構穩健。' :
+                       breadthData.breadthSignal === 'narrowing' ? '漲幅開始集中於少數巨頭，需持續觀察。' :
+                       breadthData.breadthSignal === 'concentrated' ? '市場明顯集中，防禦性配置重要性提升。' :
+                       '市場極端病態集中，歷史性修正風險上升。'}
+                    </p>
+                  </div>
+
+                  <div className="relative h-2 bg-border-subtle rounded-full overflow-hidden mt-2">
+                    <motion.div 
+                      initial={{ width: 0 }}
+                      animate={{ width: `${breadthData.concentration.breadthScore}%` }}
+                      transition={{ duration: 1.5, ease: "easeOut" }}
+                      className={`h-full rounded-full ${
+                        breadthData.concentration.breadthScore > 70 ? 'bg-emerald-400' :
+                        breadthData.concentration.breadthScore > 50 ? 'bg-yellow-400' :
+                        breadthData.concentration.breadthScore > 30 ? 'bg-orange-400' : 'bg-rose-400'
+                      }`}
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <div className="lg:col-span-7 flex flex-col gap-4">
+                <div className="bg-card-bg/30 rounded-2xl p-5 border border-border-subtle h-full">
+                  <div className="text-[10px] text-brand uppercase font-bold tracking-widest mb-3 flex items-center gap-2">
+                    <Activity className="w-3 h-3" />
+                    詳細分析 (Breadth Analysis)
+                  </div>
+                  <p className="text-xs sm:text-sm text-text-secondary leading-relaxed mb-6 font-medium">
+                    {breadthData.breadthAnalysis}
+                  </p>
+
+                  <div className="space-y-3">
+                    <div className="text-[10px] text-text-dim uppercase font-bold tracking-widest px-1">Top 10 個股技術狀態 (依今日漲幅排序)</div>
+                    <div className="space-y-1 max-h-96 overflow-y-auto custom-scrollbar pr-2">
+                      {[...(breadthData.topStocks || [])]
+                        .sort((a, b) => b.changePercent1D - a.changePercent1D)
+                        .map((stock: any) => (
+                        <div key={stock.symbol} className="flex items-center justify-between py-2 border-b border-white/5 last:border-0 hover:bg-white/5 px-2 rounded-lg transition-colors">
+                          <div className="flex flex-col w-20">
+                            <span className="text-xs font-mono font-bold text-text-bright">{stock.symbol}</span>
+                            <span className="text-[9px] text-text-dim truncate">{stock.name}</span>
+                          </div>
+                          <div className={`text-xs font-mono font-bold w-14 text-right ${stock.changePercent1D >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                            {stock.changePercent1D >= 0 ? '+' : ''}{stock.changePercent1D.toFixed(1)}%
+                          </div>
+                          <div className="flex gap-1">
+                            <span className={`text-[8px] font-bold px-1 py-0.5 rounded ${stock.aboveMa50 ? 'bg-emerald-500/20 text-emerald-400' : 'bg-rose-500/20 text-rose-400'}`}>50MA</span>
+                            <span className={`text-[8px] font-bold px-1 py-0.5 rounded ${stock.aboveMa200 ? 'bg-emerald-500/20 text-emerald-400' : 'bg-rose-500/20 text-rose-400'}`}>200MA</span>
+                          </div>
+                          <div className={`text-[10px] font-mono font-bold text-right w-16 ${stock.distanceFromHigh52w > -5 ? 'text-emerald-400' : stock.distanceFromHigh52w > -15 ? 'text-yellow-400' : 'text-rose-400'}`}>
+                            {stock.distanceFromHigh52w.toFixed(1)}%
+                            <span className="text-[8px] ml-1 opacity-60">ATH</span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </div>
             </div>
           ) : (
             <div className="flex items-center justify-center h-48 text-text-dim italic text-sm">

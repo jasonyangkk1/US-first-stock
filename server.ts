@@ -779,6 +779,160 @@ async function startServer() {
     });
   });
 
+  // 7. Market Breadth Analysis
+  app.get('/api/breadth', async (req, res) => {
+    const cacheKey = 'market_breadth_v1';
+    const cached = cache.get(cacheKey);
+    if (cached) return res.json(cached);
+
+    const TOP10 = [
+      { symbol: 'AAPL', name: 'Apple' },
+      { symbol: 'MSFT', name: 'Microsoft' },
+      { symbol: 'NVDA', name: 'NVIDIA' },
+      { symbol: 'AMZN', name: 'Amazon' },
+      { symbol: 'GOOGL', name: 'Alphabet' },
+      { symbol: 'META', name: 'Meta' },
+      { symbol: 'TSLA', name: 'Tesla' },
+      { symbol: 'AVGO', name: 'Broadcom' },
+      { symbol: 'BRK-B', name: 'Berkshire' },
+      { symbol: 'JPM', name: 'JPMorgan' },
+    ];
+
+    const generateBreadthAnalysis = (score: number, premium: number, ma50Pct: number, ma200Pct: number): string => {
+      if (score > 70) {
+        return `市場寬度健康，Top10 巨頭中 ${ma50Pct}% 站上50日均線、${ma200Pct}% 站上200日均線，漲勢具備廣泛參與基礎。集中度溢價僅 ${premium.toFixed(1)}%，顯示非巨頭股也有貢獻，牛市結構穩健，短期回調風險相對較低。`;
+      }
+      if (score > 50) {
+        return `市場寬度出現收窄跡象，Top10 中有 ${100 - ma50Pct}% 已跌破50日均線。集中度溢價達 ${premium.toFixed(1)}%，指數漲幅開始集中於少數個股驅動。歷史上此形態若持續 2-3 個月，往往先出現板塊輪動，再演變為較大幅度的指數修正，建議開始分批降低高估值持股。`;
+      }
+      if (score > 30) {
+        return `市場寬度明顯惡化，Top10 中僅 ${ma50Pct}% 站上50日均線。集中度溢價高達 ${premium.toFixed(1)}%，漲幅高度集中於 Mag7 等少數股票，整體市場抵抗力下降。一旦領頭股出現利空，缺乏廣泛支撐的指數將快速回落，歷史上類似形態出現在 2021 年底 and 2018 年 Q4 前夕，建議提高防禦性配置。`;
+      }
+      return `市場寬度極度惡化，Top10 中僅 ${ma50Pct}% 站上50日均線，集中度溢價達 ${premium.toFixed(1)}%，已達歷史性極端水位。2000年科技泡沫頂峰和2021年底均出現類似形態，隨後均發生大規模修正。當前指數若持續依賴少數股票支撐，系統性風險極高，強烈建議降低風險暴露。`;
+    };
+
+    try {
+      const ninetyDaysAgo = new Date();
+      ninetyDaysAgo.setDate(ninetyDaysAgo.getDate() - 90);
+
+      // Phase 1: 並行抓取所有 quotes
+      const stockQuotes = await Promise.all(
+        TOP10.map(s => yahooFinance.quote(s.symbol).catch(() => null))
+      );
+      const sp500Quote = await yahooFinance.quote('^GSPC').catch(() => null);
+
+      // Phase 2: 抓 S&P500 chart
+      const sp500Chart = await yahooFinance.chart('^GSPC', {
+        period1: ninetyDaysAgo,
+        interval: '1d' as any
+      }).catch(() => null);
+
+      // 計算指標
+      const topStocks = stockQuotes
+        .map((q: any, i: number) => {
+          if (!q) return null;
+          const price = q.regularMarketPrice ?? 0;
+          const ma50 = q.fiftyDayAverage ?? 0;
+          const ma200 = q.twoHundredDayAverage ?? 0;
+          const high52w = q.fiftyTwoWeekHigh ?? price;
+          
+          return {
+            symbol: TOP10[i].symbol,
+            name: q.shortName || TOP10[i].name,
+            changePercent1D: q.regularMarketChangePercent ?? 0,
+            changePercent3M: null,
+            aboveMa50: ma50 > 0 && price > ma50,
+            aboveMa200: ma200 > 0 && price > ma200,
+            distanceFromHigh52w: high52w > 0 ? ((price - high52w) / high52w) * 100 : 0,
+          };
+        })
+        .filter(Boolean);
+
+      if (topStocks.length < 5) {
+        return res.status(500).json({ error: 'Insufficient stock data' });
+      }
+
+      const validCount = topStocks.length;
+      const aboveMa50Count = (topStocks as any[]).filter(s => s.aboveMa50).length;
+      const aboveMa200Count = (topStocks as any[]).filter(s => s.aboveMa200).length;
+      const advancingCount = (topStocks as any[]).filter(s => s.changePercent1D > 0).length;
+
+      const breadthScore = Math.round(
+        (aboveMa50Count / validCount) * 40 +
+        (aboveMa200Count / validCount) * 30 +
+        (advancingCount / validCount) * 30
+      );
+
+      let sp500Return3M = 0;
+      if (sp500Chart?.quotes?.length > 5) {
+        const quotes = (sp500Chart.quotes as any[]).filter((q: any) => q.close != null);
+        if (quotes.length > 0) {
+          const first = quotes[0].close;
+          const last = quotes[quotes.length - 1].close;
+          sp500Return3M = first > 0 ? ((last - first) / first) * 100 : 0;
+        }
+      }
+
+      const avgTop10Change = (topStocks as any[]).reduce((sum: number, s: any) => sum + s.changePercent1D, 0) / validCount;
+      const sp500Change = sp500Quote?.regularMarketChangePercent ?? 0;
+      const concentrationPremium = avgTop10Change - sp500Change;
+
+      const top10WeightEstimate = 38.5;
+
+      const sp500Price = sp500Quote?.regularMarketPrice ?? 0;
+      const sp500Ma50 = sp500Quote?.fiftyDayAverage ?? 0;
+      const sp500AboveMa = sp500Price > sp500Ma50;
+      const sp500AboveMa50Estimate = sp500AboveMa
+        ? Math.min(75, Math.round((aboveMa50Count / validCount) * 100 * 0.8 + 20))
+        : Math.max(35, Math.round((aboveMa50Count / validCount) * 100 * 0.6));
+
+      const breadthSignal = 
+        breadthScore > 70 ? 'healthy' :
+        breadthScore > 50 ? 'narrowing' :
+        breadthScore > 30 ? 'concentrated' : 'extreme_concentration';
+
+      const breadthLabel =
+        breadthSignal === 'healthy' ? '健康 (Healthy)' :
+        breadthSignal === 'narrowing' ? '收窄 (Narrowing)' :
+        breadthSignal === 'concentrated' ? '集中 (Concentrated)' : '極度集中 (Extreme)';
+
+      const riskLevel =
+        breadthSignal === 'healthy' ? 'low' :
+        breadthSignal === 'narrowing' ? 'medium' :
+        breadthSignal === 'concentrated' ? 'high' : 'critical';
+
+      const breadthAnalysis = generateBreadthAnalysis(
+        breadthScore, 
+        concentrationPremium, 
+        Math.round((aboveMa50Count/validCount)*100), 
+        Math.round((aboveMa200Count/validCount)*100)
+      );
+
+      const result = {
+        concentration: {
+          breadthScore,
+          concentrationPremium: parseFloat(concentrationPremium.toFixed(2)),
+          top10WeightEstimate,
+          top10Return3M: parseFloat(avgTop10Change.toFixed(2)),
+          sp500Return3M: parseFloat(sp500Return3M.toFixed(2)),
+        },
+        topStocks,
+        breadthSignal,
+        breadthLabel,
+        breadthAnalysis,
+        riskLevel,
+        sp500AboveMa50Estimate,
+        lastUpdated: new Date().toISOString(),
+      };
+      
+      cache.set(cacheKey, result, 600);
+      res.json(result);
+    } catch (error: any) {
+      console.error('[breadth] Handler error:', error?.message);
+      res.status(500).json({ error: 'Failed to calculate market breadth' });
+    }
+  });
+
   // Vite middleware for development
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({

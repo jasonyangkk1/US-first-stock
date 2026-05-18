@@ -7,7 +7,8 @@
     "api/earnings/[symbol].ts": { "maxDuration": 30 },
     "api/sentiment.ts": { "maxDuration": 30 },
     "api/macro.ts": { "maxDuration": 30 },
-    "api/yields.ts": { "maxDuration": 25 }
+    "api/yields.ts": { "maxDuration": 25 },
+    "api/breadth.ts": { "maxDuration": 45 }
   },
   "headers": [
     {
