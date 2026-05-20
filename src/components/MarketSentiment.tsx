@@ -59,6 +59,28 @@ const ECONOMIC_INDICATORS: EconomicIndicator[] = [
     previous: '3.5%',
     actual: '3.3%',
     forecast: '3.4%'
+  },
+  {
+    id: 'ppi',
+    name: '生產者物價指數 (PPI)',
+    label: 'Producer Price Index',
+    description: '衡量生產者銷售最終商品與服務的價格變化（Final Demand PPI），是 BLS 每月公布的主要 PPI 指標。通常領先 CPI 1-3 個月，PPI 持續走高預示未來消費者通膨壓力將增加。2026年4月整體 PPI 年增率達 6.0%，大幅超出市場預期的 4.9%。',
+    nextRelease: '2026-06-12 20:30 (TPE)',
+    icon: BarChart3,
+    previous: '4.3%',
+    actual: '6.0%',
+    forecast: '4.9%'
+  },
+  {
+    id: 'core_ppi',
+    name: '核心 PPI（不含食品與能源）',
+    label: 'Core Producer Price Index',
+    description: '排除食品與能源後的生產者物價指數，反映更穩定的核心通膨趨勢。Federal Reserve 在制定利率政策時更重視核心指標，因為食品與能源價格波動較大，不反映持續性通膨壓力。核心 PPI 與核心 PCE 相關性高，是預判未來核心 CPI 走勢的重要指標。',
+    nextRelease: '2026-06-12 20:30 (TPE)',
+    icon: BarChart3,
+    previous: '4.0%',
+    actual: '5.2%',
+    forecast: '4.3%'
   }
 ];
 
@@ -883,7 +905,9 @@ export default function MarketSentiment() {
                   {(() => {
                     const actualNum = parseFloat(indicator.actual || '0');
                     const forecastNum = parseFloat(indicator.forecast || '0');
-                    const isCPI = indicator.id === 'cpi';
+
+                    const isInflation = indicator.id === 'cpi' || indicator.id === 'ppi' || indicator.id === 'core_ppi';  // 通膨類指標
+                    const isJobs = indicator.id === 'nfp' || indicator.id === 'adp';        // 就業類指標
                     
                     let status = 'neutral';
                     let statusColor = 'text-yellow-500';
@@ -891,21 +915,26 @@ export default function MarketSentiment() {
                     let analysis = '符合預期';
 
                     if (indicator.actual && indicator.forecast) {
-                      if (isCPI) {
-                        // CPI: Lower is better (Green), Higher is risky (Red)
-                        if (actualNum < forecastNum - 0.05) {
+                      if (isInflation) {
+                        // 通膨類（CPI/PPI）：低於預期=通膨降溫=利多，高於預期=通膨壓力=利空
+                        const threshold = indicator.id === 'ppi' || indicator.id === 'core_ppi' ? 0.1 : 0.05;  // PPI/Core PPI 用較寬的閾值
+                        if (actualNum < forecastNum - threshold) {
                           status = 'positive';
                           statusColor = 'text-emerald-500';
                           bgColor = 'bg-emerald-500/10';
-                          analysis = '通膨降溫 (利多)';
-                        } else if (actualNum > forecastNum + 0.05) {
+                          analysis = indicator.id === 'ppi' ? '通膨回落 (利多)' :
+                                     indicator.id === 'core_ppi' ? '核心通膨回落 (利多)' :
+                                     '通膨降溫 (利多)';
+                        } else if (actualNum > forecastNum + threshold) {
                           status = 'negative';
                           statusColor = 'text-rose-500';
                           bgColor = 'bg-rose-500/10';
-                          analysis = '通膨過熱 (利空)';
+                          analysis = indicator.id === 'ppi' ? '通膨升溫 (利空)' :
+                                     indicator.id === 'core_ppi' ? '核心通膨升溫 (利空)' :
+                                     '通膨過熱 (利空)';
                         }
-                      } else {
-                        // Jobs: Higher is better (Green), Lower is risky (Red)
+                      } else if (isJobs) {
+                        // 就業類（NFP/ADP）：高於預期=就業強勁=利多，低於預期=就業疲弱=利空
                         if (actualNum > forecastNum + 10) {
                           status = 'positive';
                           statusColor = 'text-emerald-500';

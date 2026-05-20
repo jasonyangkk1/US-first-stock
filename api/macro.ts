@@ -6,7 +6,9 @@ const FRED_BASE_URL = 'https://api.stlouisfed.org/fred/series/observations';
 const SERIES = {
   NFP: 'PAYEMS',
   ADP: 'ADPWNUSNERSA',
-  CPI: 'CPIAUCSL'
+  CPI: 'CPIAUCSL',
+  PPI: 'PPIID',
+  CORE_PPI: 'PPIFID'
 };
 
 let cache: { data: any; ts: number } | null = null;
@@ -54,13 +56,20 @@ function getNextReleaseDates() {
     cpi = getNthDayOfMonth(year, month + 1, 2, 3);
   }
 
+  // PPI: 2nd Thu of month, 08:30 ET (roughly 13:30 UTC)
+  let ppi = getNthDayOfMonth(year, month, 2, 4);
+  if (ppi && checkPassed(ppi, 13, 30)) {
+    ppi = getNthDayOfMonth(year, month + 1, 2, 4);
+  }
+
   const format = (d: Date | null, time: string) => 
     d ? `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')} ${time} (TPE)` : 'TBD';
 
   return {
     adp: format(adp, '20:15'),
     nfp: format(nfp, '20:30'),
-    cpi: format(cpi, '20:30')
+    cpi: format(cpi, '20:30'),
+    ppi: format(ppi, '20:30')
   };
 }
 
@@ -90,10 +99,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.json({ error: 'FRED_API_KEY not configured' });
   }
 
-  const [nfpData, adpData, cpiData] = await Promise.all([
+  const [nfpData, adpData, cpiData, ppiData, corePpiData] = await Promise.all([
     fetchFred(SERIES.NFP, 5),
     fetchFred(SERIES.ADP, 5),
-    fetchFred(SERIES.CPI, 18)
+    fetchFred(SERIES.CPI, 18),
+    fetchFred(SERIES.PPI, 18),
+    fetchFred(SERIES.CORE_PPI, 18)
   ]);
 
   const dates = getNextReleaseDates();
@@ -143,11 +154,45 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       forecast: "3.4%",
       nextRelease: dates.cpi,
       lastUpdated: new Date().toISOString()
+    },
+    ppi: {
+      actual: (ppiData && ppiData.length >= 13) ? (
+        (() => {
+          const yoy = (ppiData[0].value / ppiData[12].value - 1) * 100;
+          return validateRange(yoy, -10, 30) ? `${yoy.toFixed(1)}%` : null;
+        })()
+      ) : null,
+      previous: (ppiData && ppiData.length >= 14) ? (
+        (() => {
+          const yoy = (ppiData[1].value / ppiData[13].value - 1) * 100;
+          return validateRange(yoy, -10, 30) ? `${yoy.toFixed(1)}%` : null;
+        })()
+      ) : null,
+      forecast: "4.9%",
+      nextRelease: dates.ppi,
+      lastUpdated: new Date().toISOString()
+    },
+    core_ppi: {
+      actual: (corePpiData && corePpiData.length >= 13) ? (
+        (() => {
+          const yoy = (corePpiData[0].value / corePpiData[12].value - 1) * 100;
+          return validateRange(yoy, -5, 20) ? `${yoy.toFixed(1)}%` : null;
+        })()
+      ) : null,
+      previous: (corePpiData && corePpiData.length >= 14) ? (
+        (() => {
+          const yoy = (corePpiData[1].value / corePpiData[13].value - 1) * 100;
+          return validateRange(yoy, -5, 20) ? `${yoy.toFixed(1)}%` : null;
+        })()
+      ) : null,
+      forecast: "4.3%",
+      nextRelease: dates.ppi,
+      lastUpdated: new Date().toISOString()
     }
   };
 
   // Only cache if we have at least one successful fetch
-  if (results.nfp.actual || results.adp.actual || results.cpi.actual) {
+  if (results.nfp.actual || results.adp.actual || results.cpi.actual || results.ppi.actual || results.core_ppi.actual) {
     cache = { data: results, ts: Date.now() };
   }
 
