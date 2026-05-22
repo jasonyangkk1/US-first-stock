@@ -108,21 +108,56 @@ export default function EarningsTracker({ onSelectStock }: { onSelectStock?: (sy
   };
 
   useEffect(() => {
+    // 1. 讀取 localStorage 中的自訂股票
+    const saved = localStorage.getItem('earnings_custom_symbols');
+    const customSymbols: string[] = saved ? JSON.parse(saved) : [];
+    
+    // 2. 載入所有股票數據
     setLoading(true);
-    fetchEarningsData(MAG7)
-      .then(d => {
-        setData(d);
-        setLoading(false);
+    fetchEarningsData(MAG7)  // 先載入 MAG7 bulk
+      .then(mag7Data => {
+        setData(mag7Data);
+        // 再逐一載入自訂股票
+        if (customSymbols.length > 0) {
+          return Promise.allSettled(
+            customSymbols.map(s => fetchEarningsData([s]).then(r => r[0]).catch(() => null))
+          ).then(results => {
+            const custom = results
+              .filter(r => r.status === 'fulfilled' && r.value)
+              .map(r => (r as PromiseFulfilledResult<any>).value);
+            setData(prev => {
+              const existing = new Set(prev.map(d => d.symbol));
+              const newOnes = custom.filter(d => d && !existing.has(d.symbol));
+              return [...prev, ...newOnes];
+            });
+          });
+        }
       })
       .catch((err) => {
         console.error('Fetch error:', err);
         setData([]);
-        setLoading(false);
-      });
+      })
+      .finally(() => setLoading(false));
   }, []);
 
   const toggleExpand = (symbol: string) => {
     setExpandedSymbol(expandedSymbol === symbol ? null : symbol);
+  };
+
+  const handleRemoveSymbol = (symbol: string) => {
+    // 從 data state 移除
+    setData(prev => prev.filter(item => item.symbol !== symbol));
+    
+    // 從 localStorage 移除
+    const saved = localStorage.getItem('earnings_custom_symbols');
+    const current: string[] = saved ? JSON.parse(saved) : [];
+    localStorage.setItem(
+      'earnings_custom_symbols',
+      JSON.stringify(current.filter(s => s !== symbol))
+    );
+    
+    // 如果刪除的是展開的項目，收合它
+    if (expandedSymbol === symbol) setExpandedSymbol(null);
   };
 
   const safeDate = (val: any): Date => {
@@ -149,18 +184,28 @@ export default function EarningsTracker({ onSelectStock }: { onSelectStock?: (sy
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
     if (!searchQuery.trim()) return;
-    
+    const symbol = searchQuery.trim().toUpperCase();
     setError(null);
     setSearching(true);
     
-    fetchEarningsData([searchQuery.toUpperCase()])
+    fetchEarningsData([symbol])
       .then(results => {
         if (results.length === 0) throw new Error('Not found');
         const result = results[0];
         setData(prev => {
           const exists = prev.find(item => item.symbol === result.symbol);
           if (exists) return prev;
-          return [result, ...prev];
+          
+          // 寫入 localStorage（只儲存非 MAG7 的自訂股票）
+          if (!MAG7.includes(result.symbol)) {
+            const saved = localStorage.getItem('earnings_custom_symbols');
+            const current: string[] = saved ? JSON.parse(saved) : [];
+            if (!current.includes(result.symbol)) {
+              localStorage.setItem('earnings_custom_symbols', JSON.stringify([...current, result.symbol]));
+            }
+          }
+          
+          return [...prev, result];   // 新增到最後面（MAG7 在前）
         });
         setSearchQuery('');
       })
@@ -276,6 +321,18 @@ export default function EarningsTracker({ onSelectStock }: { onSelectStock?: (sy
                     </div>
                     <span className={`status-pill ${statusClass} text-[9px] sm:text-xs`}>{statusText}</span>
                     <ChevronRight className={`w-4 h-4 text-text-dim/30 transition-transform flex-shrink-0 ${isExpanded ? 'rotate-90 text-brand' : ''}`} />
+                    {!MAG7.includes(item.symbol) && (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();  // 防止觸發展開/收合
+                          handleRemoveSymbol(item.symbol);
+                        }}
+                        className="w-6 h-6 flex items-center justify-center rounded-full bg-rose-500/20 text-rose-400 hover:bg-rose-500/40 hover:text-rose-300 transition-colors flex-shrink-0"
+                        title={`移除 ${item.symbol}`}
+                      >
+                        <span className="text-xs font-bold leading-none">×</span>
+                      </button>
+                    )}
                   </div>
                 </div>
 
