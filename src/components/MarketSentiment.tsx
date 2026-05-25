@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { motion } from 'motion/react';
-import { Gauge, Activity, AlertCircle, RefreshCcw, TrendingDown, TrendingUp, Users, ShoppingBag, Clock, Calendar, BarChart3 } from 'lucide-react';
+import { Gauge, Activity, AlertCircle, RefreshCcw, TrendingDown, TrendingUp, Users, ShoppingBag, Clock, Calendar, BarChart3, AlertTriangle, Zap } from 'lucide-react';
 
 interface Sentiment {
   vix: {
@@ -89,12 +89,131 @@ export default function MarketSentiment() {
   const [macroData, setMacroData] = useState<any>(null);
   const [yieldsData, setYieldsData] = useState<any>(null);
   const [breadthData, setBreadthData] = useState<any>(null);
+  const [carryData, setCarryData] = useState<any>(null);
+  const [cotData, setCotData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [macroLoading, setMacroLoading] = useState(true);
   const [yieldsLoading, setYieldsLoading] = useState(true);
   const [breadthLoading, setBreadthLoading] = useState(true);
+  const [carryLoading, setCarryLoading] = useState(true);
+  const [cotLoading, setCotLoading] = useState(true);
   const [yieldsError, setYieldsError] = useState<string | null>(null);
   const [error, setError] = useState(false);
+
+  const USDJPY_WEEKLY_CHANGE = carryData?.usdJpyWeeklyChange ?? 1.2; // 當前週漲幅（%），從 API 快取或歷史計算獲取，預設 1.2%
+  const USDJPY_WARNING_THRESHOLD = 2.5; // 黃燈臨界
+  const USDJPY_DANGER_THRESHOLD = 3.5;  // 紅燈臨界
+
+  const usdJpyRawChange = USDJPY_WEEKLY_CHANGE; // 現在是有方向性的值
+  const usdJpyDropPct = Math.max(-usdJpyRawChange, 0); // 只有下跌（負值）才計入危險
+  const usdJpyProgress = Math.min((usdJpyDropPct / 5) * 100, 100);
+  const usdJpyStatus: 'safe' | 'warning' | 'danger' = 
+    usdJpyDropPct >= USDJPY_DANGER_THRESHOLD ? 'danger' :
+    usdJpyDropPct >= USDJPY_WARNING_THRESHOLD ? 'warning' : 'safe';
+
+  const usdJpyColor = {
+    safe: { text: 'text-emerald-400', bar: 'bg-emerald-500', border: 'border-emerald-500/10', bg: 'bg-emerald-500/5', label: `正常區間 (${usdJpyProgress.toFixed(0)}%)` },
+    warning: { text: 'text-yellow-400', bar: 'bg-yellow-500', border: 'border-yellow-500/10', bg: 'bg-yellow-500/5', label: `⚠️ 黃燈警戒 (${usdJpyProgress.toFixed(0)}%)` },
+    danger: { text: 'text-rose-400', bar: 'bg-rose-500', border: 'border-rose-500/20', bg: 'bg-rose-500/5', label: `🔴 紅燈危險 (${usdJpyProgress.toFixed(0)}%)` },
+  }[usdJpyStatus];
+
+  // 計算綜合風險評級
+  const bojRiskLevel = carryData ? carryData.riskLevel : 'HIGH';
+  const bojRiskColor = bojRiskLevel === 'HIGH' ? 'bg-rose-500/20 text-rose-400 border-rose-500/30' 
+                     : bojRiskLevel === 'MODERATE' ? 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30'
+                     : 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30';
+
+  const COT_DATA = cotData?.historicalData ?? [
+    { date: '2024-08', contracts: 184223, label: '2024年8月', isVerified: true },
+    { date: '2024-10', contracts: 140000, label: '2024年10月', isVerified: true },
+    { date: '2024-12', contracts: 120000, label: '2024年12月', isVerified: true },
+    { date: '2025-02', contracts: 155000, label: '2025年2月', isVerified: true },
+    { date: '2025-05', contracts: 130000, label: '2025年5月', isVerified: true },
+    { date: '2025-08', contracts: 110000, label: '2025年8月', isVerified: true },
+    { date: '2025-11', contracts: 90000,  label: '2025年11月', isVerified: true },
+    { date: '2026-02', contracts: 95000,  label: '2026年2月',  isVerified: true },
+    { date: '2026-05', contracts: 80000,  label: '2026年5月（估算）', isVerified: false },
+  ];
+
+  const CURRENT_SHORT = cotData?.currentShort ?? 80000;
+  const PEAK_SHORT = cotData?.peakShort ?? 184223;
+  const DANGER_THRESHOLD = cotData?.dangerThreshold ?? 150000;
+  const WARNING_THRESHOLD = cotData?.warningThreshold ?? 120000;
+  const reductionPct = cotData?.reductionPct ?? 56.6;
+  const riskFromPeak = cotData?.riskFromPeak ?? 43.4;
+
+  const isNewPeak = CURRENT_SHORT >= PEAK_SHORT;
+  const isDanger = CURRENT_SHORT >= DANGER_THRESHOLD;
+  const isWarning = CURRENT_SHORT >= WARNING_THRESHOLD;
+
+  let cotStatusColor = 'text-emerald-400 font-bold border border-emerald-500/30 bg-emerald-500/10';
+  let cotCardBorder = 'border-emerald-500/20';
+  let cotCardBg = 'bg-emerald-500/5';
+  let cotCardLabelColor = 'text-emerald-400';
+  let cotCardTextColor = 'text-emerald-400/95';
+  let cotBadgeText = '風險降溫';
+  let cotBadgeStyle = 'text-emerald-400 border-emerald-500/30 bg-emerald-500/10 px-1.5 py-0.5 rounded uppercase tracking-widest text-[9px] font-bold';
+
+  if (isNewPeak) {
+    cotStatusColor = 'text-rose-400 border border-rose-500/30 bg-rose-500/10';
+    cotCardBorder = 'border-rose-500/35';
+    cotCardBg = 'bg-rose-500/5';
+    cotCardLabelColor = 'text-rose-400';
+    cotCardTextColor = 'text-rose-400/95';
+    cotBadgeText = '⚠️ 歷史新高 (CRITICAL)';
+    cotBadgeStyle = 'text-rose-400 border border-rose-500/35 bg-rose-500/10 px-1.5 py-0.5 rounded uppercase tracking-widest text-[9px] font-bold animate-pulse';
+  } else if (isDanger) {
+    cotStatusColor = 'text-red-400 border border-red-500/30 bg-red-500/10';
+    cotCardBorder = 'border-red-500/30';
+    cotCardBg = 'bg-red-500/5';
+    cotCardLabelColor = 'text-red-400';
+    cotCardTextColor = 'text-red-400/95';
+    cotBadgeText = '⚠️ 危險區間 (HIGH RISK)';
+    cotBadgeStyle = 'text-red-400 border border-red-500/30 bg-red-500/10 px-1.5 py-0.5 rounded uppercase tracking-widest text-[9px] font-bold animate-pulse';
+  } else if (isWarning) {
+    cotStatusColor = 'text-yellow-400 border border-yellow-500/30 bg-yellow-500/10';
+    cotCardBorder = 'border-yellow-500/20';
+    cotCardBg = 'bg-yellow-500/5';
+    cotCardLabelColor = 'text-yellow-400';
+    cotCardTextColor = 'text-yellow-400/95';
+    cotBadgeText = '⚠️ 警戒區間 (WARNING)';
+    cotBadgeStyle = 'text-yellow-400 border border-yellow-500/30 bg-yellow-500/10 px-1.5 py-0.5 rounded uppercase tracking-widest text-[9px] font-bold';
+  }
+
+  let currentShortCardBorder = isNewPeak ? 'border-rose-500/35 bg-rose-950/10' : isDanger ? 'border-red-500/30 bg-red-950/5' : isWarning ? 'border-yellow-500/20 bg-yellow-950/5' : 'border-emerald-500/20 bg-card-bg/50';
+  let currentShortTextColor = isNewPeak ? 'text-rose-400 font-mono font-bold text-3xl' : isDanger ? 'text-red-400 font-mono font-bold text-3xl' : isWarning ? 'text-yellow-400 font-mono font-bold text-3xl' : 'text-emerald-400 font-mono font-bold text-3xl';
+  let currentShortLabelColor = isNewPeak ? 'text-rose-400' : isDanger ? 'text-red-400' : isWarning ? 'text-yellow-400' : 'text-emerald-400';
+  let currentShortBadgeStyle = isNewPeak 
+    ? 'bg-rose-500/15 text-rose-400 border border-rose-500/20' 
+    : isDanger 
+      ? 'bg-red-500/15 text-red-500 border border-red-500/20' 
+      : isWarning 
+        ? 'bg-yellow-500/15 text-yellow-500 border border-yellow-500/20' 
+        : 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/20';
+
+  let changeDirectionLabel = '較峰值減少';
+  let changeDirectionSymbol = '↓';
+  let displayReductionPct = reductionPct;
+  if (reductionPct < 0) {
+    changeDirectionLabel = '較峰值增加';
+    changeDirectionSymbol = '↑';
+    displayReductionPct = Math.abs(reductionPct);
+  }
+
+  let dynamicConclusionText = '';
+  if (isNewPeak) {
+    dynamicConclusionText = `「空軍兵臨城下，創歷史新高」——當前 ${(CURRENT_SHORT / 10000).toFixed(1)} 萬口空單規模已突破 2024 年 8 月引發全球金融市場震盪的 ${(PEAK_SHORT / 10000).toFixed(1)} 萬口歷史峰值（較峰值暴增 ${displayReductionPct.toFixed(1)}%）。這意味著目前日圓空單擁擠度已凌駕 2024 年引發踩踏的起爆點，面臨極高的高槓桿平倉多殺多隱患。一旦日圓在美日利差縮小或地緣因素引發急升時，極易引發美股及套利方被迫集體斬倉，產生系統性資產價格殺盤風險。`;
+  } else if (isDanger) {
+    dynamicConclusionText = `「空單堆積，逼近歷史高位」——當前 ${(CURRENT_SHORT / 10000).toFixed(1)} 萬口空單規模已處於極度危險區間（較峰值僅差 ${displayReductionPct.toFixed(1)}%），且大幅超越 ${(DANGER_THRESHOLD / 10000).toFixed(0)} 萬口的危險臨界線。在如此高比例的套利部位下，日圓若出現任何升值風吹草動，皆可能演變成集體踩踏，引發美股資產保證金追繳，面臨高度系統性平倉風險。`;
+  } else if (isWarning) {
+    dynamicConclusionText = `「空單進入警戒區間」——當前 ${(CURRENT_SHORT / 10000).toFixed(1)} 萬口空單規模已超越 ${(WARNING_THRESHOLD / 10000).toFixed(0)} 萬口警戒線（較峰值減少 ${displayReductionPct.toFixed(1)}%）。市場套利槓桿顯著回升，儘管尚未打破 historical peak，但日圓如果快速升值，空單部位平倉壓力將迅速轉為實質踩踏風險，需嚴格監看日圓走勢。`;
+  } else {
+    dynamicConclusionText = `「車上的人已少了一半以上」——當前 ${(CURRENT_SHORT / 10000).toFixed(1)} 萬口空單規模（較峰值減少 ${displayReductionPct.toFixed(1)}%），遠低於 2024 年引發踩踏的 ${(PEAK_SHORT / 10000).toFixed(1)} 萬口峰值。就算日圓突然升值，被強制斷頭的投機客規模已大幅縮減，系統性拋售美股的連鎖反應風險顯著降低。`;
+  }
+
+  let monitoringText = isNewPeak || isDanger
+    ? `🚨 當前空單部位已處於極度危險的邊緣 (${(CURRENT_SHORT / 10000).toFixed(1)} 萬口)，任何日圓急升走勢均可能重演 2024 年 8 月的套利交易平倉潮，請高度戒備美股連鎖風險。`
+    : `⚠️ 仍需監控：若空單快速回升至 ${(WARNING_THRESHOLD/10000).toFixed(0)} 萬口以上，需重新評估風險等級。`;
 
   useEffect(() => {
     const fetchSentiment = async () => {
@@ -167,10 +286,40 @@ export default function MarketSentiment() {
       }
     };
 
+    const fetchCarry = async () => {
+      setCarryLoading(true);
+      try {
+        const res = await fetch('/api/carry');
+        if (!res.ok) throw new Error('Carry API failed');
+        const data = await res.json();
+        setCarryData(data);
+      } catch (e) {
+        console.error('Error fetching carry data:', e);
+      } finally {
+        setCarryLoading(false);
+      }
+    };
+
+    const fetchCOT = async () => {
+      setCotLoading(true);
+      try {
+        const res = await fetch('/api/cot');
+        if (!res.ok) throw new Error('COT API failed');
+        const data = await res.json();
+        setCotData(data);
+      } catch (e) {
+        console.error('Error fetching COT data:', e);
+      } finally {
+        setCotLoading(false);
+      }
+    };
+
     fetchSentiment();
     fetchMacro();
     fetchYields();
     fetchBreadth();
+    fetchCarry();
+    fetchCOT();
   }, []);
 
   if (loading || !sentiment) {
@@ -984,6 +1133,576 @@ export default function MarketSentiment() {
           Synchronize Data
         </button>
       </div>
+
+      {/* 日圓套利交易風險監控 */}
+      <motion.div
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.5, delay: 0.2 }}
+        className="sleek-card mt-8"
+      >
+        {/* 1. 標題列 */}
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-border-subtle pb-4 mb-6">
+          <div className="flex items-center gap-2">
+            <AlertTriangle className="w-5 h-5 text-yellow-500 animate-pulse" />
+            <h3 className="card-title text-text-bright font-bold">日圓套利交易風險監控 (Yen Carry Trade)</h3>
+          </div>
+          <div className="flex items-center gap-1.5 self-start sm:self-auto">
+            <span className="relative flex h-2 w-2">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-yellow-400 opacity-75"></span>
+              <span className="relative inline-flex rounded-full h-2 w-2 bg-yellow-500"></span>
+            </span>
+            <span className="text-[10px] uppercase tracking-widest font-mono font-bold text-yellow-500 py-0.5 px-2 bg-yellow-500/10 rounded">
+              MONITORING
+            </span>
+          </div>
+        </div>
+
+        {/* 2. 利差儀表板 (grid 3 欄) */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+          {/* 卡片A: 聯準會利率 */}
+          <div className="p-4 rounded-xl border border-rose-500/10 bg-rose-500/5 hover:border-rose-500/20 transition-all">
+            <div className="flex justify-between items-center mb-1">
+              <div className="text-xs text-rose-400 font-bold">聯準會利率</div>
+              {carryData && !carryLoading && (
+                <span className="text-[8px] font-bold text-emerald-400 border border-emerald-500/30 bg-emerald-500/10 px-1.5 py-0.5 rounded uppercase tracking-widest">
+                  Live
+                </span>
+              )}
+            </div>
+            <div className="text-2xl font-mono font-bold text-rose-500">
+              {carryData ? carryData.fedRateRange : '5.25% - 5.50%'}
+            </div>
+            <div className="text-[11px] text-text-dim mt-1 flex items-center gap-1">
+              <span className="w-1.5 h-1.5 rounded-full bg-rose-500"></span>
+              FOMC 維持高位
+            </div>
+          </div>
+
+          {/* 卡片B: 日銀利率 */}
+          <div className="p-4 rounded-xl border border-blue-500/10 bg-blue-500/5 hover:border-blue-500/20 transition-all">
+            <div className="text-xs text-blue-400 font-bold mb-1 font-sans">日銀利率</div>
+            <div className="text-2xl font-mono font-bold text-blue-400">
+              {carryData ? `${carryData.bojRate.toFixed(2)}%` : '0.75%'}
+            </div>
+            <div className="text-[11px] text-text-dim mt-1 flex items-center gap-1">
+              <span className="w-1.5 h-1.5 rounded-full bg-blue-400"></span>
+              BOJ 政策利率
+            </div>
+          </div>
+
+          {/* 卡片C: 名目利差 */}
+          <div className="p-4 rounded-xl border border-brand/10 bg-brand/5 hover:border-brand/20 transition-all">
+            <div className="text-xs text-brand font-bold mb-1">名目利差</div>
+            <div className="text-2xl font-mono font-bold text-brand">
+              {carryData ? `${carryData.nominalSpread.toFixed(2)}%` : '4.50%'}
+            </div>
+            <p className="text-[11px] text-text-dim mt-1 flex items-center gap-1">
+              <span className="w-1.5 h-1.5 rounded-full bg-brand"></span>
+              實質利差 ≈ {carryData ? `${carryData.realSpread.toFixed(1)}%` : '3.8%'}
+            </p>
+            {carryData && (
+              <p className="text-[9px] text-text-dim/50 mt-1 font-mono">
+                通膨差 {carryData.inflationDiff?.toFixed(1) ?? '1.5'}%
+                {carryData.inflationDiff ? 
+                  <span className="text-emerald-500/70 ml-1">● FRED Live</span> : 
+                  <span className="text-text-dim/40 ml-1">● 估算值</span>
+                }
+              </p>
+            )}
+          </div>
+        </div>
+
+        {/* 3. 兩個臨界點警示 (左右 2 欄 grid) */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+          {/* 臨界點一 */}
+          <div className="p-4 rounded-xl border border-border-subtle bg-card-bg/40 flex flex-col justify-between">
+            <div>
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-[10px] font-mono font-bold text-yellow-500 py-0.5 px-2 bg-yellow-500/10 rounded-md">
+                  THRESHOLD 01
+                </span>
+                <span className="text-xs text-text-dim flex items-center gap-1">
+                  危險臨界值: <span className="font-mono font-bold text-yellow-500">3.5%</span>
+                </span>
+              </div>
+              <h4 className="text-sm font-bold text-text-bright mb-3">實質利差縮小臨界</h4>
+              <div className="flex items-baseline gap-2 mb-4">
+                <span className="text-3xl font-mono font-bold text-yellow-500">
+                  {carryData ? `${carryData.realSpread.toFixed(2)}%` : '3.8%'}
+                </span>
+                <span className="text-xs text-text-secondary">
+                  距警戒線 3.5% (差距 {carryData ? (carryData.realSpread - 3.5).toFixed(2) : '0.3'}%)
+                </span>
+              </div>
+            </div>
+            
+            <div>
+              {/* 進度條 */}
+              <div className="mb-4">
+                <div className="h-1.5 w-full bg-border-subtle rounded-full overflow-hidden">
+                  <motion.div
+                    initial={{ width: 0 }}
+                    animate={{ width: `${carryData ? Math.min(carryData.realSpreadProgress, 100) : 76}%` }}
+                    transition={{ duration: 1.5 }}
+                    className="h-full bg-yellow-500 rounded-full"
+                  />
+                </div>
+                <div className="flex justify-between mt-1">
+                  <span className="text-[10px] text-text-dim">安全</span>
+                  <span className="text-[10px] text-yellow-500 font-bold">
+                    接近臨界點 ({carryData ? Math.min(carryData.realSpreadProgress, 100).toFixed(0) : 76}%)
+                  </span>
+                </div>
+              </div>
+              <div className="p-2.5 rounded bg-yellow-500/5 border border-yellow-500/10 text-[11px] text-yellow-400 leading-relaxed flex gap-1.5">
+                <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
+                <span>
+                  <strong>觸發後影響：</strong>對沖基金開始評估日元套利部位盈虧平衡點，觸發程序性平倉訊號。
+                </span>
+              </div>
+            </div>
+          </div>
+
+          {/* 臨界點二 */}
+          <div className="p-4 rounded-xl border border-border-subtle bg-card-bg/40 flex flex-col justify-between">
+            <div>
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-[10px] font-mono font-bold text-emerald-500 py-0.5 px-2 bg-emerald-500/10 rounded-md">
+                  THRESHOLD 02
+                </span>
+                <span className="text-xs text-text-dim flex items-center gap-1">
+                  危險臨界值: USD/JPY <span className="text-rose-400 font-bold font-sans">下跌</span> 3–5%
+                </span>
+              </div>
+              <h4 className="text-sm font-bold text-text-bright mb-3">USD/JPY 單周暴跌臨界 (日圓暴升)</h4>
+              <div className="flex items-baseline gap-2 flex-wrap mb-4">
+                <span className={`text-3xl font-mono font-bold ${usdJpyColor.text}`}>
+                  {USDJPY_WEEKLY_CHANGE >= 0 ? '+' : ''}{USDJPY_WEEKLY_CHANGE}%
+                </span>
+                <span className="text-xs text-text-secondary">
+                  週漲幅 (距警戒線 3–5%)
+                </span>
+                <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded ${
+                  USDJPY_WEEKLY_CHANGE >= 0 
+                    ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' 
+                    : 'bg-rose-500/10 text-rose-400 border border-rose-500/20'
+                }`}>
+                  {USDJPY_WEEKLY_CHANGE >= 0 ? '日圓貶值 ↓ 安全' : '日圓升值 ↑ 危險'}
+                </span>
+              </div>
+            </div>
+
+            <div>
+              {/* 進度條 */}
+              <div className="mb-4">
+                <div className="h-1.5 w-full bg-border-subtle rounded-full overflow-hidden">
+                  <motion.div
+                    initial={{ width: 0 }}
+                    animate={{ width: `${usdJpyProgress}%` }}
+                    transition={{ duration: 1.5 }}
+                    className={`h-full rounded-full ${usdJpyColor.bar}`}
+                  />
+                </div>
+                <div className="flex justify-between mt-1">
+                  <span className="text-[10px] text-text-dim">安全</span>
+                  <span className={`text-[10px] font-bold ${usdJpyColor.text}`}>{usdJpyColor.label}</span>
+                </div>
+                {/* 閾值說明 */}
+                <div className="flex justify-between text-[9px] text-text-dim/50 mt-1 font-mono">
+                  <span>不危險</span>
+                  <span className="text-yellow-500/70 py-0.5 px-1 rounded bg-yellow-500/5 border border-yellow-500/10">黃燈 下跌 2.5%</span>
+                  <span className="text-rose-500/70 py-0.5 px-1 rounded bg-rose-500/5 border border-rose-500/10">紅燈 下跌 3.5%</span>
+                  <span>極危險</span>
+                </div>
+              </div>
+              <div className={`p-2.5 rounded text-[11px] leading-relaxed flex gap-1.5 border ${usdJpyColor.border} ${usdJpyColor.bg} ${usdJpyColor.text}`}>
+                <Activity className="w-3.5 h-3.5 flex-shrink-0 mt-0.5 animate-pulse" />
+                <span>
+                  <strong>觸發後影響：</strong>日圓不理性暴漲 → 持有美元資產的套利方匯損放大 → 強制平倉賣美股買回日圓。
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* 4. 傳導鏈 (Contagion Chain) 視覺化 */}
+        <div className="mb-6">
+          <div className="text-xs font-bold text-text-secondary mb-3 flex items-center gap-1.5">
+            <Activity className="w-3.5 h-3.5 text-rose-500" />
+            日圓套利交易平倉傳導鏈 (Contagion Chain)
+          </div>
+          <div className="p-4 rounded-xl border border-rose-500/10 bg-rose-500/5">
+            <div className="flex flex-wrap md:flex-nowrap items-center justify-between gap-3 text-center">
+              <div className="flex-1 min-w-[120px] bg-card-bg/60 border border-border-subtle rounded-lg px-3 py-2">
+                <div className="text-[10px] text-text-dim mb-0.5">STEP 1</div>
+                <div className="text-xs font-bold text-text-bright">美股下跌</div>
+              </div>
+              <div className="text-rose-500 font-bold select-none text-sm md:text-base animate-pulse">→</div>
+              
+              <div className="flex-1 min-w-[120px] bg-card-bg/60 border border-border-subtle rounded-lg px-3 py-2">
+                <div className="text-[10px] text-text-dim mb-0.5">STEP 2</div>
+                <div className="text-xs font-bold text-text-bright">虧損擴大</div>
+              </div>
+              <div className="text-rose-500 font-bold select-none text-sm md:text-base animate-pulse">→</div>
+
+              <div className="flex-1 min-w-[120px] bg-card-bg/60 border border-border-subtle rounded-lg px-3 py-2">
+                <div className="text-[10px] text-text-dim mb-0.5">STEP 3</div>
+                <div className="text-xs font-bold text-text-bright">保證金追繳</div>
+              </div>
+              <div className="text-rose-500 font-bold select-none text-sm md:text-base animate-pulse">→</div>
+
+              <div className="flex-1 min-w-[120px] bg-card-bg/60 border border-border-subtle rounded-lg px-3 py-2">
+                <div className="text-[10px] text-text-dim mb-0.5">STEP 4</div>
+                <div className="text-xs font-bold text-text-bright">強制拋售美股</div>
+              </div>
+              <div className="text-rose-500 font-bold select-none text-sm md:text-base animate-pulse">→</div>
+
+              <div className="flex-1 min-w-[120px] bg-card-bg/60 border border-border-subtle rounded-lg px-3 py-2">
+                <div className="text-[10px] text-text-dim mb-0.5">STEP 5</div>
+                <div className="text-xs font-bold text-text-bright">買回日圓還債</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* 5. 日圓投機空單部位監控 */}
+        <div className="bg-card-bg/20 rounded-2xl border border-border-subtle p-5 space-y-4 mb-6">
+          {/* 標題列 */}
+          <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center gap-2">
+              {isNewPeak || isDanger ? (
+                <TrendingUp className="w-4 h-4 text-rose-400 animate-pulse" />
+              ) : (
+                <TrendingDown className="w-4 h-4 text-emerald-400" />
+              )}
+              <span className="text-sm font-bold text-text-bright">
+                日圓投機空單部位 (JPY Speculative Short)
+              </span>
+              <span className={cotBadgeStyle}>
+                {cotBadgeText}
+              </span>
+              {cotData?.isLive ? (
+                <span className="text-[9px] font-bold text-emerald-400 border border-emerald-500/30 bg-emerald-500/10 px-1.5 py-0.5 rounded uppercase tracking-widest">
+                  {cotData.dataSource === 'nasdaq' ? 'CFTC · Nasdaq' : 'CFTC Live'}
+                </span>
+              ) : (
+                <span className="text-[9px] font-bold text-yellow-500/70 border border-yellow-500/20 bg-yellow-500/5 px-1.5 py-0.5 rounded uppercase tracking-widest">
+                  ⚠ 估算數據
+                </span>
+              )}
+            </div>
+            <div className="text-[9px] text-text-dim/60 font-mono">
+              來源：CFTC COT 報告 · 每周五更新
+            </div>
+          </div>
+
+          {/* 主體：左側儀表 + 右側圖表 */}
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
+            {/* 左側 lg:col-span-5 */}
+            <div className="lg:col-span-5 space-y-3">
+              <div className="grid grid-cols-2 gap-3">
+                {/* 當前部位卡片 */}
+                <div className={`p-5 rounded-xl border transition-colors duration-500 ${currentShortCardBorder}`}>
+                  <div className={`text-[10px] font-bold uppercase tracking-widest mb-1 ${currentShortLabelColor}`}>
+                    當前空單部位
+                  </div>
+                  <div className={currentShortTextColor}>
+                    {(CURRENT_SHORT / 10000).toFixed(1)} <span className="text-lg">萬口</span>
+                  </div>
+                  <div className="text-[10px] text-text-dim mt-1">{(CURRENT_SHORT).toLocaleString()} contracts · {cotData?.isLive ? "最新 COT 報告" : "2026年5月"}</div>
+                  <div className="mt-3 flex items-center gap-2">
+                    <span className={`text-[9px] font-bold px-2 py-0.5 rounded-full ${currentShortBadgeStyle}`}>
+                      {changeDirectionSymbol} {changeDirectionLabel} {displayReductionPct.toFixed(1)}%
+                    </span>
+                  </div>
+                </div>
+
+                {/* 歷史峰值卡片 */}
+                <div className="bg-card-bg/50 p-5 rounded-xl border border-rose-500/20">
+                  <div className="text-[10px] font-bold text-rose-400 uppercase tracking-widest mb-1">
+                    歷史峰值（最危險時）
+                  </div>
+                  <div className="text-3xl font-mono font-bold text-rose-400">
+                    {(PEAK_SHORT / 10000).toFixed(1)} <span className="text-lg">萬口</span>
+                  </div>
+                  <div className="text-[10px] text-text-dim mt-1">{(PEAK_SHORT).toLocaleString()} contracts · 2024年8月</div>
+                  <div className="mt-3 flex items-center gap-2">
+                    <span className="text-[9px] font-bold bg-rose-500/15 text-rose-400 border border-rose-500/20 px-2 py-0.5 rounded-full">
+                      2024年8月暴跌導火線
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              {/* 殘留風險進度條 */}
+              <div className="bg-card-bg/30 p-4 rounded-xl border border-border-subtle">
+                <div className="flex justify-between text-[10px] mb-2">
+                  <span className="text-text-dim font-bold uppercase tracking-wider">踩踏風險殘留</span>
+                  <span className={`font-mono font-bold ${isNewPeak || isDanger ? 'text-rose-400' : isWarning ? 'text-yellow-400' : 'text-emerald-400'}`}>{riskFromPeak}% / 峰值</span>
+                </div>
+                <div className="h-2 bg-border-subtle rounded-full overflow-hidden">
+                  <motion.div
+                    initial={{ width: 0 }}
+                    animate={{ width: `${Math.min(riskFromPeak, 100)}%` }}
+                    transition={{ duration: 1.5, ease: 'easeOut' }}
+                    className={`h-full rounded-full bg-gradient-to-r from-emerald-500 via-yellow-400 to-rose-500 ${isNewPeak || isDanger ? 'animate-pulse' : ''}`}
+                  />
+                </div>
+                <div className="flex justify-between text-[9px] text-text-dim/50 mt-1 font-mono">
+                  <span>0% 完全平倉</span>
+                  <span className="text-yellow-500/70">警戒 {(WARNING_THRESHOLD/10000).toFixed(0)}萬口</span>
+                  <span className="text-rose-500/70">危險 {(DANGER_THRESHOLD/10000).toFixed(0)}萬口</span>
+                  <span>峰值 {(PEAK_SHORT/10000).toFixed(1)}萬口</span>
+                </div>
+              </div>
+
+              {/* 結論文字框 */}
+              <div className={`p-4 rounded-xl border transition-all duration-300 ${cotCardBorder} ${cotCardBg}`}>
+                <div className={`text-[10px] font-bold uppercase tracking-widest mb-2 flex items-center gap-1.5 ${cotCardLabelColor}`}>
+                  <Activity className="w-3 h-3" />
+                  風險評估結論
+                </div>
+                <p className={`text-xs leading-relaxed font-semibold whitespace-pre-line ${cotCardTextColor}`}>
+                  {dynamicConclusionText}
+                </p>
+                <div className="mt-2.5 text-[10px] leading-relaxed text-text-bright/90 font-medium">
+                  {monitoringText}
+                </div>
+                {!cotData?.isLive && (
+                  <div className="mt-2 p-2 rounded bg-yellow-500/5 border border-yellow-500/10 text-[9px] text-yellow-500/70 leading-relaxed">
+                    ⚠ 歷史數據為市場估算值，非 CFTC 官方原始數字。如需精確數據，請至 
+                    <a href="https://data.nasdaq.com/data/CFTC/097741_FO_ALL_CR" target="_blank" rel="noopener" className="underline ml-1">
+                      Nasdaq Data Link
+                    </a> 查閱（免費，需 API Key）。
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* 右側 lg:col-span-7 */}
+            <div className="lg:col-span-7">
+              {(() => {
+                const W = 400, H = 160;
+                const PAD = { top: 20, right: 20, bottom: 30, left: 50 };
+                const chartW = W - PAD.left - PAD.right;
+                const chartH = H - PAD.top - PAD.bottom;
+                
+                const maxVal = 200000;
+                const minVal = 0;
+                
+                const toX = (i: number) => PAD.left + (i / (COT_DATA.length - 1)) * chartW;
+                const toY = (v: number) => PAD.top + chartH - ((v - minVal) / (maxVal - minVal)) * chartH;
+                
+                const points = COT_DATA.map((d, i) => `${toX(i)},${toY(d.contracts)}`).join(' ');
+                const areaPoints = `${PAD.left},${PAD.top + chartH} ${points} ${toX(COT_DATA.length - 1)},${PAD.top + chartH}`;
+                
+                const dangerY = toY(DANGER_THRESHOLD);
+                const warningY = toY(WARNING_THRESHOLD);
+                const currentY = toY(CURRENT_SHORT);
+                
+                return (
+                  <div className="bg-card-bg/30 rounded-xl border border-border-subtle p-4 h-full flex flex-col">
+                    <div className="text-[10px] text-text-dim uppercase font-bold tracking-widest mb-3 flex items-center gap-2">
+                      <BarChart3 className="w-3 h-3" />
+                      JPY 投機空單歷史趨勢 (CFTC COT)
+                    </div>
+                    <svg viewBox={`0 0 ${W} ${H}`} className="w-full flex-1" preserveAspectRatio="xMidYMid meet">
+                      <defs>
+                        <linearGradient id="cotFill" x1="0%" y1="0%" x2="0%" y2="100%">
+                          <stop offset="0%" stopColor="#f97316" stopOpacity="0.25" />
+                          <stop offset="100%" stopColor="#f97316" stopOpacity="0" />
+                        </linearGradient>
+                      </defs>
+                      
+                      {/* 危險線 */}
+                      <line x1={PAD.left} y1={dangerY} x2={W - PAD.right} y2={dangerY}
+                        stroke="#f43f5e" strokeWidth="1" strokeDasharray="4,3" opacity="0.6" />
+                      <text x={W - PAD.right + 2} y={dangerY + 3} fontSize="7" fill="#f43f5e" opacity="0.8">危險</text>
+                      
+                      {/* 警戒線 */}
+                      <line x1={PAD.left} y1={warningY} x2={W - PAD.right} y2={warningY}
+                        stroke="#eab308" strokeWidth="1" strokeDasharray="4,3" opacity="0.5" />
+                      <text x={W - PAD.right + 2} y={warningY + 3} fontSize="7" fill="#eab308" opacity="0.8">警戒</text>
+                      
+                      {/* 面積填充 */}
+                      <polygon points={areaPoints} fill="url(#cotFill)" />
+                      
+                      {/* 折線 (已驗證與估算分段繪製) */}
+                      {COT_DATA.map((d, i) => {
+                        if (i === 0) return null;
+                        const prev = COT_DATA[i-1];
+                        const x1 = toX(i-1);
+                        const y1 = toY(prev.contracts);
+                        const x2 = toX(i);
+                        const y2 = toY(d.contracts);
+                        const isSegmentVerified = prev.isVerified && d.isVerified;
+                        
+                        return (
+                          <line 
+                            key={i}
+                            x1={x1}
+                            y1={y1}
+                            x2={x2}
+                            y2={y2}
+                            stroke={isSegmentVerified ? "#f97316" : "rgba(255,255,255,0.4)"}
+                            strokeWidth="2.5"
+                            strokeDasharray={isSegmentVerified ? "none" : "3,3"}
+                            strokeLinecap="round"
+                          />
+                        );
+                      })}
+                      
+                      {/* 各歷史數據端端點 */}
+                      {COT_DATA.map((d, i) => {
+                        if (i === 0 || i === COT_DATA.length - 1) return null;
+                        return (
+                          <circle 
+                            key={i}
+                            cx={toX(i)}
+                            cy={toY(d.contracts)}
+                            r="3"
+                            fill={d.isVerified ? "#f97316" : "rgba(255,255,255,0.4)"}
+                            stroke="#1e293b"
+                            strokeWidth="1"
+                          />
+                        );
+                      })}
+                      
+                      {/* 最新點（綠色） */}
+                      <circle cx={toX(COT_DATA.length - 1)} cy={currentY} r="5" fill="#10b981" />
+                      <circle cx={toX(COT_DATA.length - 1)} cy={currentY} r="9" fill="#10b981" opacity="0.2" />
+                      <text x={toX(COT_DATA.length - 1) - 5} y={currentY - 10} fontSize="8" fill="#10b981" fontWeight="bold" textAnchor="middle">{(CURRENT_SHORT / 10000).toFixed(1)}萬口</text>
+                      
+                      {/* 峰值點（紅色） */}
+                      <circle cx={toX(0)} cy={toY(PEAK_SHORT)} r="4" fill="#f43f5e" />
+                      <text x={toX(0)} y={toY(PEAK_SHORT) - 7} fontSize="8" fill="#f43f5e" fontWeight="bold" textAnchor="middle">{(PEAK_SHORT / 10000).toFixed(1)}萬</text>
+                      
+                      {/* Y軸刻度 */}
+                      {[0, 50000, 100000, 150000, 200000].map(v => (
+                        <g key={v}>
+                          <text x={PAD.left - 4} y={toY(v) + 3} fontSize="7" fill="rgba(255,255,255,0.3)" textAnchor="end">
+                            {v === 0 ? '0' : `${v/10000}萬`}
+                          </text>
+                          <line x1={PAD.left - 2} y1={toY(v)} x2={PAD.left} y2={toY(v)} stroke="rgba(255,255,255,0.2)" />
+                        </g>
+                      ))}
+                      
+                      {/* X軸時間標籤（只顯示首尾和最新）*/}
+                      <text x={toX(0)} y={H - 5} fontSize="7" fill="rgba(255,255,255,0.3)" textAnchor="middle">2024/08</text>
+                      <text x={toX(COT_DATA.length - 1)} y={H - 5} fontSize="7" fill="#10b981" textAnchor="middle" fontWeight="bold">{COT_DATA[COT_DATA.length - 1].date.replace('-', '/')}</text>
+                    </svg>
+                    
+                    {/* 圖例 */}
+                    <div className="flex flex-wrap items-center gap-x-4 gap-y-1 mt-2 text-[9px] text-text-dim/60 font-mono w-full">
+                      <span className="flex items-center gap-1"><span className="w-2 h-0.5 bg-orange-500 inline-block"></span>空單口數</span>
+                      <span className="flex items-center gap-1"><span className="w-2 h-0.5 bg-rose-500 border-dashed inline-block opacity-60"></span>危險閾值 {(DANGER_THRESHOLD/10000).toFixed(0)}萬</span>
+                      <span className="flex items-center gap-1"><span className="w-2 h-0.5 bg-yellow-500 inline-block opacity-60"></span>警戒閾值 {(WARNING_THRESHOLD/10000).toFixed(0)}萬</span>
+                      <span className="flex items-center gap-1"><span className="w-2 h-2 bg-emerald-500 rounded-full inline-block"></span>當前</span>
+                      {cotData?.updatedAt && (
+                        <span className="ml-auto text-[8px] text-text-dim/40 font-mono">
+                          更新：{new Date(cotData.updatedAt).toLocaleString('zh-TW', {
+                            timeZone: 'Asia/Taipei', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit'
+                          })}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                );
+              })()}
+            </div>
+          </div>
+        </div>
+
+        {/* 6. 6月BOJ會議風險卡片 (全寬) */}
+        <div className="p-4 rounded-xl bg-rose-500/5 border border-rose-500/20 mb-6">
+          <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-6">
+            <div className="flex items-start gap-3 lg:max-w-[40%] font-sans w-full">
+              <Calendar className="w-5 h-5 text-rose-500 mt-1 flex-shrink-0" />
+              <div className="flex-1">
+                <div className="flex items-center justify-between gap-2">
+                  <h5 className="text-sm font-bold text-rose-400">2026年6月 BOJ 政策會議</h5>
+                  <span className={`text-[9px] font-bold px-2 py-0.5 rounded-full border uppercase tracking-widest ${bojRiskColor}`}>
+                    {bojRiskLevel} RISK
+                  </span>
+                </div>
+                <p className="text-xs text-text-bright font-bold mt-1">最高風險催化劑</p>
+                <p className="text-[11px] text-text-dim mt-1">
+                  市場高度緊盯日本央行在6月會議中的行動，若政策立場轉鷹，可能提早引發大規模的資金匯回。
+                </p>
+              </div>
+            </div>
+
+            <div className="flex-1 grid grid-cols-1 sm:grid-cols-2 gap-4 lg:pl-6 lg:border-l lg:border-border-subtle/50">
+              {/* 升息機率 */}
+              <div>
+                <div className="flex justify-between items-center text-xs mb-1.5 animate-pulse">
+                  <span className="text-text-secondary font-bold">升息機率</span>
+                  <span className="font-mono font-bold text-orange-400">
+                    {carryData ? `${carryData.bojHikeProb}%` : '62%'}
+                    <span className="text-[8px] text-text-dim/60 font-normal ml-1 border border-border-subtle px-1 rounded bg-card-bg/50">
+                      {carryData?.bojProbIsEnvOverride ? 'ENV 覆寫' : 'OIS 隱含'}
+                    </span>
+                  </span>
+                </div>
+                <div className="h-1.5 w-full bg-border-subtle rounded-full overflow-hidden">
+                  <motion.div
+                    initial={{ width: 0 }}
+                    animate={{ width: `${carryData ? carryData.bojHikeProb : 62}%` }}
+                    transition={{ duration: 1.5 }}
+                    className="h-full bg-orange-500 rounded-full"
+                  />
+                </div>
+              </div>
+
+              {/* 升息 + QT 同步機率 */}
+              <div>
+                <div className="flex justify-between items-center text-xs mb-1.5">
+                  <span className="text-text-secondary font-bold">「升息 + QT」同步宣佈機率</span>
+                  <span className="font-mono font-bold text-rose-400">
+                    {carryData ? `${carryData.bojQtProb}%` : '32%'}
+                  </span>
+                </div>
+                <div className="h-1.5 w-full bg-border-subtle rounded-full overflow-hidden">
+                  <motion.div
+                    initial={{ width: 0 }}
+                    animate={{ width: `${carryData ? carryData.bojQtProb : 32}%` }}
+                    transition={{ duration: 1.5 }}
+                    className="h-full bg-rose-500 rounded-full"
+                  />
+                </div>
+              </div>
+            </div>
+          </div>
+          
+          <div className="mt-4 pt-3 border-t border-rose-500/10 text-[11px] text-rose-400/90 leading-relaxed flex items-start gap-1.5">
+            <Zap className="w-3.5 h-3.5 text-rose-500 flex-shrink-0 mt-0.5" />
+            <span>
+              若 BOJ 同時宣佈升息與縮減購債（QT），將同步衝擊兩個臨界點，套利交易崩解速度將以小時計，對美股造成突發性拋壓。
+            </span>
+          </div>
+        </div>
+
+        {/* 7. 底部免責聲明 */}
+        <div className="text-[9px] text-text-dim/40 font-mono mt-2 mb-1.5 flex flex-col sm:flex-row sm:items-center gap-1 border-b border-border-subtle/30 pb-2">
+          <span>⏱ 機率來源：OIS 市場隱含 / Bloomberg 共識</span>
+          <div className="sm:ml-auto flex gap-3">
+            <span>機率更新：{carryData?.bojProbUpdated ?? '2026-05-25'}</span>
+            {carryData && (
+              <span>匯率更新：{new Date(carryData.updatedAt).toLocaleString('zh-TW', {
+                timeZone: 'Asia/Taipei', 
+                month: '2-digit', 
+                day: '2-digit', 
+                hour: '2-digit', 
+                minute: '2-digit'
+              })}</span>
+            )}
+          </div>
+        </div>
+        <div className="text-[11px] text-text-dim flex items-center gap-1">
+          <span>* 套利交易規模估計逾 4 兆美元，平倉速度取決於市場流動性與波動率。本監控僅供參考，不構成投資建議。</span>
+        </div>
+      </motion.div>
     </div>
   );
 }

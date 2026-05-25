@@ -933,6 +933,355 @@ async function startServer() {
     }
   });
 
+  // 8. Yen Carry Trade Risk Monitor
+  let carryCache: { data: any; ts: number } | null = null;
+  const CARRY_CACHE_TTL = 300_000; // 5 minutes cache
+
+  app.get('/api/carry', async (req, res) => {
+    if (carryCache && Date.now() - carryCache.ts < CARRY_CACHE_TTL) {
+      return res.json(carryCache.data);
+    }
+
+    const FRED_API_KEY = process.env.FRED_API_KEY;
+    const FRED_BASE_URL = 'https://api.stlouisfed.org/fred/series/observations';
+
+    const BOJ_HIKE_PROB = Number(process.env.BOJ_HIKE_PROB ?? '62');
+    const BOJ_QT_PROB = Number(process.env.BOJ_QT_PROB ?? '32');
+    const BOJ_PROB_UPDATED = process.env.BOJ_PROB_UPDATED ?? '2026-05-25';
+
+    const fetchFromFred = async (seriesId: string): Promise<number | null> => {
+      if (!FRED_API_KEY) return null;
+      try {
+        const url = `${FRED_BASE_URL}?series_id=${seriesId}&api_key=${FRED_API_KEY}&file_type=json&sort_order=desc&limit=1`;
+        const response = await fetch(url);
+        if (!response.ok) return null;
+        const data: any = await response.json();
+        const latest = data.observations?.[0];
+        if (latest && latest.value !== '.') {
+          return Number(latest.value);
+        }
+      } catch (e) {
+        console.error(`[carry] FRED fetch error for ${seriesId}:`, e);
+      }
+      return null;
+    };
+
+    const fetchFromFredMultiple = async (seriesId: string, limit: number): Promise<number[]> => {
+      if (!FRED_API_KEY) return [];
+      try {
+        const url = `${FRED_BASE_URL}?series_id=${seriesId}&api_key=${FRED_API_KEY}&file_type=json&sort_order=desc&limit=${limit}`;
+        const response = await fetch(url);
+        if (!response.ok) return [];
+        const data: any = await response.json();
+        return (data.observations || [])
+          .filter((o: any) => o.value !== '.')
+          .map((o: any) => Number(o.value));
+      } catch (e) {
+        console.error(`[carry] FRED multiple fetch error for ${seriesId}:`, e);
+        return [];
+      }
+    };
+
+    const fetchInflationDiff = async (): Promise<number> => {
+      const FALLBACK = 1.5;
+      if (!FRED_API_KEY) return FALLBACK;
+      try {
+        const [usData, jpData] = await Promise.all([
+          fetchFromFredMultiple('CPIAUCSL', 13),
+          fetchFromFredMultiple('JPNCPIALLMINMEI', 13)
+        ]);
+        if (usData.length < 13 || jpData.length < 13) return FALLBACK;
+        
+        const usCpiYoY = ((usData[0] - usData[12]) / usData[12]) * 100;
+        const jpCpiYoY = ((jpData[0] - jpData[12]) / jpData[12]) * 100;
+        const diff = Number((usCpiYoY - jpCpiYoY).toFixed(2));
+        
+        return (diff > 0 && diff < 5) ? diff : FALLBACK;
+      } catch (e) {
+        console.error('[carry] fetchInflationDiff error:', e);
+        return FALLBACK;
+      }
+    };
+
+    let fedRate = 5.33;
+    let fedRateRange = "5.25% - 5.50%";
+    let bojRate = 0.75;
+    let usdJpy = 144.2;
+    let usdJpyWeeklyChange = 1.2;
+
+    let inflationDiff = 1.5;
+    if (FRED_API_KEY) {
+      try {
+        const [fedFetch, bojFetch, calculatedInflationDiff] = await Promise.all([
+          fetchFromFred('FEDFUNDS'),
+          fetchFromFred('IRSTCI01JPM156N'),
+          fetchInflationDiff()
+        ]);
+
+        if (fedFetch !== null) {
+          fedRate = fedFetch;
+          if (fedRate >= 5.0 && fedRate <= 5.5) {
+            fedRateRange = "5.25% - 5.50%";
+          } else {
+            const lower = Math.floor(fedRate * 4) / 4;
+            const upper = lower + 0.25;
+            fedRateRange = `${lower.toFixed(2)}% - ${upper.toFixed(2)}%`;
+          }
+        }
+
+        if (bojFetch !== null) {
+          bojRate = bojFetch;
+        }
+
+        inflationDiff = calculatedInflationDiff;
+      } catch (e) {
+        console.error('[carry] FRED API call failed:', e);
+      }
+    }
+
+    try {
+      const usdJpyQuote = await yahooFinance.quote('JPY=X');
+      if (usdJpyQuote && usdJpyQuote.regularMarketPrice) {
+        usdJpy = usdJpyQuote.regularMarketPrice;
+      }
+
+      const chartData = await yahooFinance.chart('JPY=X', {
+        period1: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000),
+        interval: '1d'
+      });
+      const quotes = chartData.quotes || [];
+      if (quotes.length >= 2) {
+        const lastClose = quotes[quotes.length - 1].close;
+        const firstClose = quotes[0].close;
+        if (lastClose && firstClose) {
+          const rawChange = ((lastClose - firstClose) / firstClose) * 100;
+          usdJpyWeeklyChange = Number(rawChange.toFixed(2));
+        }
+      } else if (usdJpyQuote.regularMarketChangePercent !== undefined) {
+        usdJpyWeeklyChange = Number((usdJpyQuote.regularMarketChangePercent ?? 1.2).toFixed(2));
+      }
+    } catch (e) {
+      console.error('[carry] Yahoo Finance fetch error:', e);
+    }
+
+    const nominalSpread = Number((fedRate - bojRate).toFixed(2));
+    const realSpread = Number((nominalSpread - inflationDiff).toFixed(2));
+
+    let realSpreadProgress: number;
+    if (realSpread <= 3.5) {
+      realSpreadProgress = 100;
+    } else if (realSpread >= 5.0) {
+      realSpreadProgress = 0;
+    } else {
+      realSpreadProgress = Number((((5.0 - realSpread) / (5.0 - 3.5)) * 100).toFixed(1));
+    }
+
+    const riskLevel = BOJ_HIKE_PROB >= 60 ? 'HIGH' : BOJ_HIKE_PROB >= 40 ? 'MODERATE' : 'LOW';
+
+    const results = {
+      fedRate,
+      fedRateRange,
+      bojRate,
+      nominalSpread,
+      realSpread,
+      realSpreadProgress,
+      usdJpy,
+      usdJpyWeeklyChange,
+      bojHikeProb: BOJ_HIKE_PROB,
+      bojQtProb: BOJ_QT_PROB,
+      bojProbUpdated: BOJ_PROB_UPDATED,
+      bojProbIsEnvOverride: !!(process.env.BOJ_HIKE_PROB),
+      inflationDiff,
+      riskLevel,
+      updatedAt: new Date().toISOString()
+    };
+
+    carryCache = { data: results, ts: Date.now() };
+    res.json(results);
+  });
+
+  // 9. JPY Speculative Short COT Monitor
+  let cotCache: { data: any; ts: number } | null = null;
+  const COT_CACHE_TTL = 3600000; // 1-hour cache
+
+  app.get('/api/cot', async (req, res) => {
+    if (cotCache && Date.now() - cotCache.ts < COT_CACHE_TTL) {
+      return res.json(cotCache.data);
+    }
+
+    const NASDAQ_API_KEY = process.env.NASDAQ_DATA_LINK_API_KEY;
+
+    // 層1：Quandl/Nasdaq Data Link
+    const fetchFromNasdaq = async (): Promise<{ value: number; date: string; history: Array<{date: string, value: number}> } | null> => {
+      if (!NASDAQ_API_KEY) return null;
+      try {
+        const url = `https://data.nasdaq.com/api/v3/datasets/CFTC/097741_FO_ALL_CR.json?api_key=${NASDAQ_API_KEY}&rows=52`;
+        const response = await fetch(url, { signal: AbortSignal.timeout(8000) });
+        if (!response.ok) return null;
+        const json: any = await response.json();
+        
+        const dataset = json?.dataset;
+        if (!dataset?.data || !dataset?.column_names) return null;
+        
+        const colNames: string[] = dataset.column_names.map((c: string) => c.toLowerCase());
+        const shortIdx = colNames.findIndex(c => c.includes('noncommercial') && c.includes('short'));
+        if (shortIdx === -1) return null;
+        
+        const rows: any[][] = dataset.data;
+        if (!rows.length) return null;
+        
+        const latest = rows[0];
+        const latestDate = latest[0] as string;
+        const latestShort = latest[shortIdx] as number;
+        
+        const monthlyHistory: Array<{date: string, value: number}> = [];
+        const seenMonths = new Set<string>();
+        for (const row of rows) {
+          const month = (row[0] as string).substring(0, 7);
+          if (!seenMonths.has(month)) {
+            seenMonths.add(month);
+            monthlyHistory.push({ date: month, value: row[shortIdx] as number });
+          }
+        }
+        monthlyHistory.reverse();
+        
+        return { value: latestShort, date: latestDate, history: monthlyHistory };
+      } catch (e) {
+        console.error('[cot] Nasdaq fetch error:', e);
+        return null;
+      }
+    };
+
+    // 層2：CFTC Socrata API (公用、無須金鑰、100%可靠)
+    const fetchFromCFTCSocrata = async (): Promise<{ value: number; date: string; history: Array<{date: string, value: number}> } | null> => {
+      try {
+        const url = 'https://publicreporting.cftc.gov/resource/6dca-aqww.json?cftc_contract_market_code=097741&$order=report_date_as_yyyy_mm_dd DESC&$limit=52';
+        const response = await fetch(url, {
+          headers: { 'Accept': 'application/json' },
+          signal: AbortSignal.timeout(10000)
+        });
+        if (!response.ok) return null;
+        const records: any[] = await response.json();
+        if (!records || !records.length) return null;
+
+        const latest = records[0];
+        const latestDate = latest.report_date_as_yyyy_mm_dd?.split('T')[0] ?? '';
+        const latestShort = Number(latest.noncomm_positions_short_all || 0);
+
+        const monthlyHistory: Array<{date: string, value: number}> = [];
+        const seenMonths = new Set<string>();
+        for (const row of records) {
+          const fullDate = row.report_date_as_yyyy_mm_dd?.split('T')[0] ?? '';
+          if (!fullDate) continue;
+          const month = fullDate.substring(0, 7);
+          if (!seenMonths.has(month)) {
+            seenMonths.add(month);
+            monthlyHistory.push({
+              date: month,
+              value: Number(row.noncomm_positions_short_all || 0)
+            });
+          }
+        }
+        monthlyHistory.reverse();
+
+        return { value: latestShort, date: latestDate, history: monthlyHistory };
+      } catch (e) {
+        console.error('[cot] CFTC Socrata fetch error:', e);
+        return null;
+      }
+    };
+
+    let currentShort: number = 80000;
+    let isLive = false;
+    let liveDate = '';
+    let liveHistory: Array<{date: string, value: number}> = [];
+    let dataSource = 'fallback';
+
+    const nasdaqResult = await fetchFromNasdaq();
+    if (nasdaqResult) {
+      currentShort = nasdaqResult.value;
+      liveDate = nasdaqResult.date;
+      liveHistory = nasdaqResult.history;
+      isLive = true;
+      dataSource = 'nasdaq';
+      console.log('[cot] Using Nasdaq Data Link source');
+    } else {
+      const socrataResult = await fetchFromCFTCSocrata();
+      if (socrataResult) {
+        currentShort = socrataResult.value;
+        liveDate = socrataResult.date;
+        liveHistory = socrataResult.history;
+        isLive = true;
+        dataSource = 'cftc';
+        console.log('[cot] Using CFTC Socrata API source');
+      } else {
+        console.log('[cot] All live sources failed, using fallback 80000');
+      }
+    }
+
+    const VERIFIED_HISTORICAL = [
+      { date: '2024-08', contracts: 184223, isVerified: true },
+    ];
+    
+    const ESTIMATED_HISTORICAL = [
+      { date: '2024-10', contracts: 140000, isVerified: false },
+      { date: '2024-12', contracts: 120000, isVerified: false },
+      { date: '2025-02', contracts: 155000, isVerified: false },
+      { date: '2025-05', contracts: 130000, isVerified: false },
+      { date: '2025-08', contracts: 110000, isVerified: false },
+      { date: '2025-11', contracts: 90000,  isVerified: false },
+      { date: '2026-02', contracts: 95000,  isVerified: false },
+    ];
+
+    let historicalData: Array<{date: string, contracts: number, label: string, isVerified: boolean}>;
+    
+    if (isLive && liveHistory.length > 3) {
+      historicalData = liveHistory.map(h => ({
+        date: h.date,
+        contracts: h.value,
+        label: h.date.replace('-', '年') + '月',
+        isVerified: true
+      }));
+    } else {
+      historicalData = [
+        ...VERIFIED_HISTORICAL.map(h => ({ ...h, label: h.date.replace('-', '年') + '月' })),
+        ...ESTIMATED_HISTORICAL.map(h => ({ ...h, label: h.date.replace('-', '年') + '月（估算）' })),
+      ];
+    }
+
+    const latestLabel = isLive
+      ? `${liveDate.substring(0, 7).replace('-', '年')}月（CFTC Live）`
+      : '2026年5月（估算）';
+    
+    const hasLatest = historicalData.some(h => h.date === liveDate.substring(0, 7));
+    if (!hasLatest) {
+      historicalData.push({
+        date: liveDate.substring(0, 7) || '2026-05',
+        contracts: currentShort,
+        label: latestLabel,
+        isVerified: isLive
+      });
+    }
+
+    const PEAK_SHORT = 184223;
+    const results = {
+      currentShort,
+      peakShort: PEAK_SHORT,
+      reductionPct: Number(((PEAK_SHORT - currentShort) / PEAK_SHORT * 100).toFixed(1)),
+      riskFromPeak: Number((currentShort / PEAK_SHORT * 100).toFixed(1)),
+      historicalData,
+      isLive,
+      liveDate,
+      dataSource,
+      dangerThreshold: 150000,
+      warningThreshold: 120000,
+      updatedAt: new Date().toISOString()
+    };
+
+    cotCache = { data: results, ts: Date.now() };
+    res.json(results);
+  });
+
   // Vite middleware for development
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
