@@ -46,10 +46,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const ninetyDaysAgo = new Date();
     ninetyDaysAgo.setDate(ninetyDaysAgo.getDate() - 90);
 
-    // Phase 1: 並行抓取所有 quotes
-    const stockQuotes = await Promise.all(
-      TOP10.map(s => yahooFinance.quote(s.symbol).catch(() => null))
-    );
+    // Phase 1: 並行抓取所有 quotes 以及 SPY
+    const [spyQuote, ...stockQuotes] = await Promise.all([
+      yahooFinance.quote('SPY').catch(() => null),
+      ...TOP10.map(s => yahooFinance.quote(s.symbol).catch(() => null))
+    ]);
     const sp500Quote = await yahooFinance.quote('^GSPC').catch(() => null);
 
     // Phase 2: 抓 S&P500 chart (可選，僅用於 3M 報酬參考)
@@ -140,7 +141,30 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const top10AboveMa50Pct = Math.round((aboveMa50Count / validCount) * 100);
     const top10AboveMa200Pct = Math.round((aboveMa200Count / validCount) * 100);
 
-    const top10WeightEstimate = 38.5;
+    let top10WeightEstimate = 35.0; // 2026年預設估算
+    let top10WeightIsLive = false;
+
+    try {
+      let spyMarketCap = spyQuote?.regularMarketPrice && spyQuote?.sharesOutstanding
+        ? spyQuote.regularMarketPrice * spyQuote.sharesOutstanding
+        : null;
+      if (!spyMarketCap && spyQuote?.marketCap) {
+        spyMarketCap = spyQuote.marketCap;
+      }
+      
+      const top10MarketCap = (stockQuotes || []).reduce((sum, q) => sum + ((q as any)?.marketCap ?? 0), 0);
+      
+      if (spyMarketCap && top10MarketCap && spyMarketCap > 0) {
+        const calculatedWeight = Number(((top10MarketCap / spyMarketCap) * 100).toFixed(1));
+        // 合理區間過濾
+        if (calculatedWeight >= 20 && calculatedWeight <= 65) {
+          top10WeightEstimate = calculatedWeight;
+          top10WeightIsLive = true;
+        }
+      }
+    } catch (e) {
+      console.error('[breadth] top10Weight fetch error:', e);
+    }
 
     const breadthSignal = 
       breadthScore > 70 ? 'healthy' :
@@ -172,6 +196,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           ? `QQQ +${qqqReturn52w.toFixed(1)}% vs RSP +${rspReturn52w.toFixed(1)}% (52週漲幅)`
           : null,
         top10WeightEstimate,
+        top10WeightIsLive,
         top10Return3M: qqqReturn52w,
         sp500Return3M: sp500Return3M,
         concentrationTrend,

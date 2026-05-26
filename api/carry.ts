@@ -92,11 +92,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   // Setup default values
-  let fedRate = 5.33; // Default FED funds effective rate
-  let fedRateRange = "5.25% - 5.50%";
-  let bojRate = 0.75;
-  let usdJpy = 144.2;
-  let usdJpyWeeklyChange = 1.2;
+  let fedRate = 3.33; // Default FED funds effective rate ~2026年5月估算
+  let fedRateRange = "3.25% - 3.50%";
+  let bojRate = 0.50; // BOJ 升息後
+  let usdJpy = 145.0; // 近期匯率區間
+  let usdJpyWeeklyChange = 0.0;
+
+  let fedIsLive = false;
+  let bojIsLive = false;
+  let usdJpyIsLive = false;
 
   // 1. Fetch FRED data & Inflation differential
   let inflationDiff = 1.5;
@@ -109,18 +113,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     if (fedFetch !== null) {
       fedRate = fedFetch;
-      // Derive range dynamically. E.g., if fedRate is ~5.33%, range is "5.25% - 5.50%"
-      if (fedRate >= 5.0 && fedRate <= 5.5) {
-        fedRateRange = "5.25% - 5.50%";
-      } else {
-        const lower = Math.floor(fedRate * 4) / 4;
-        const upper = lower + 0.25;
-        fedRateRange = `${lower.toFixed(2)}% - ${upper.toFixed(2)}%`;
-      }
+      fedIsLive = true;
+      const lower = Math.floor(fedRate * 4) / 4;
+      const upper = lower + 0.25;
+      fedRateRange = `${lower.toFixed(2)}% - ${upper.toFixed(2)}%`;
     }
 
     if (bojFetch !== null) {
       bojRate = bojFetch;
+      bojIsLive = true;
     }
 
     inflationDiff = calculatedInflationDiff;
@@ -131,6 +132,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const usdJpyQuote = await yahooFinance.quote('JPY=X');
     if (usdJpyQuote && usdJpyQuote.regularMarketPrice) {
       usdJpy = usdJpyQuote.regularMarketPrice;
+      usdJpyIsLive = true;
     }
 
     // Measure weekly change via a 7-day chart
@@ -148,7 +150,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
     } else if (usdJpyQuote.regularMarketChangePercent !== undefined) {
       // Fallback: estimate weekly from daily change or daily absolute (direction preserved)
-      usdJpyWeeklyChange = Number((usdJpyQuote.regularMarketChangePercent ?? 1.2).toFixed(2));
+      usdJpyWeeklyChange = Number((usdJpyQuote.regularMarketChangePercent ?? 0.0).toFixed(2));
     }
   } catch (e) {
     console.error('[carry] Yahoo Finance fetch error:', e);
@@ -172,6 +174,25 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   // Determine BOJ Risk Level
   const riskLevel = BOJ_HIKE_PROB >= 60 ? 'HIGH' : BOJ_HIKE_PROB >= 40 ? 'MODERATE' : 'LOW';
 
+  // ⚠️ 每年1月需更新此陣列，來源：https://www.boj.or.jp/en/mopo/mpmsche_mpi/
+  const BOJ_MEETING_SCHEDULE_2026 = [
+    { name: '6月會議', start: '2026-06-15', end: '2026-06-16' },
+    { name: '7月會議', start: '2026-07-30', end: '2026-07-31' },
+    { name: '9月會議', start: '2026-09-18', end: '2026-09-19' },
+    { name: '10月會議', start: '2026-10-28', end: '2026-10-29' },
+    { name: '12月會議', start: '2026-12-18', end: '2026-12-19' },
+  ];
+
+  const now = new Date();
+  const nextMeeting = BOJ_MEETING_SCHEDULE_2026.find(m => new Date(m.end + 'T18:00:00+09:00') > now) ?? null;
+
+  const daysUntilMeeting = nextMeeting
+    ? Math.ceil((new Date(nextMeeting.start + 'T00:00:00+09:00').getTime() - now.getTime()) / (1000 * 60 * 60 * 24))
+    : null;
+
+  const startParts = nextMeeting ? nextMeeting.start.split('-') : [];
+  const endParts = nextMeeting ? nextMeeting.end.split('-') : [];
+
   const results = {
     fedRate,
     fedRateRange,
@@ -187,6 +208,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     bojProbIsEnvOverride: !!(process.env.BOJ_HIKE_PROB),
     inflationDiff,
     riskLevel,
+    fedIsLive,
+    bojIsLive,
+    usdJpyIsLive,
+    dataQuality: (fedIsLive && bojIsLive && usdJpyIsLive) ? 'full' : (fedIsLive || usdJpyIsLive) ? 'partial' : 'fallback',
+    bojScheduleLastUpdated: '2026-05-26', // 排程陣列最後人工確認日期
+    nextBojMeeting: nextMeeting ? {
+      name: nextMeeting.name,
+      start: nextMeeting.start,   // "2026-06-15"
+      end: nextMeeting.end,       // "2026-06-16"
+      label: `${startParts[0]}年${Number(startParts[1])}月${Number(startParts[2])}日 ~ ${Number(endParts[2])}日`,
+      shortLabel: `${Number(startParts[1])}月${Number(startParts[2])}日~${Number(endParts[2])}日舉行`,
+      daysUntil: daysUntilMeeting,
+    } : null,
     updatedAt: new Date().toISOString()
   };
 

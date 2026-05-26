@@ -815,10 +815,11 @@ async function startServer() {
       const ninetyDaysAgo = new Date();
       ninetyDaysAgo.setDate(ninetyDaysAgo.getDate() - 90);
 
-      // Phase 1: 並行抓取所有 quotes
-      const stockQuotes = await Promise.all(
-        TOP10.map(s => yahooFinance.quote(s.symbol).catch(() => null))
-      );
+      // Phase 1: 並行抓取所有 quotes 以及 SPY
+      const [spyQuote, ...stockQuotes] = await Promise.all([
+        yahooFinance.quote('SPY').catch(() => null),
+        ...TOP10.map(s => yahooFinance.quote(s.symbol).catch(() => null))
+      ]);
       const sp500Quote = await yahooFinance.quote('^GSPC').catch(() => null);
 
       // Phase 2: 抓 S&P500 chart
@@ -877,7 +878,30 @@ async function startServer() {
       const sp500Change = sp500Quote?.regularMarketChangePercent ?? 0;
       const concentrationPremium = avgTop10Change - sp500Change;
 
-      const top10WeightEstimate = 38.5;
+      let top10WeightEstimate = 35.0; // 2026年預設估算
+      let top10WeightIsLive = false;
+
+      try {
+        let spyMarketCap = spyQuote?.regularMarketPrice && spyQuote?.sharesOutstanding
+          ? spyQuote.regularMarketPrice * spyQuote.sharesOutstanding
+          : null;
+        if (!spyMarketCap && spyQuote?.marketCap) {
+          spyMarketCap = spyQuote.marketCap;
+        }
+        
+        const top10MarketCap = (stockQuotes || []).reduce((sum, q) => sum + ((q as any)?.marketCap ?? 0), 0);
+        
+        if (spyMarketCap && top10MarketCap && spyMarketCap > 0) {
+          const calculatedWeight = Number(((top10MarketCap / spyMarketCap) * 100).toFixed(1));
+          // 合理區間過濾
+          if (calculatedWeight >= 20 && calculatedWeight <= 65) {
+            top10WeightEstimate = calculatedWeight;
+            top10WeightIsLive = true;
+          }
+        }
+      } catch (e) {
+        console.error('[breadth] top10Weight fetch error in dev server:', e);
+      }
 
       const sp500Price = sp500Quote?.regularMarketPrice ?? 0;
       const sp500Ma50 = sp500Quote?.fiftyDayAverage ?? 0;
@@ -913,6 +937,7 @@ async function startServer() {
           breadthScore,
           concentrationPremium: parseFloat(concentrationPremium.toFixed(2)),
           top10WeightEstimate,
+          top10WeightIsLive,
           top10Return3M: parseFloat(avgTop10Change.toFixed(2)),
           sp500Return3M: parseFloat(sp500Return3M.toFixed(2)),
         },
@@ -1003,11 +1028,15 @@ async function startServer() {
       }
     };
 
-    let fedRate = 5.33;
-    let fedRateRange = "5.25% - 5.50%";
-    let bojRate = 0.75;
-    let usdJpy = 144.2;
-    let usdJpyWeeklyChange = 1.2;
+    let fedRate = 3.33; // Default FED funds effective rate ~2026年5月估算
+    let fedRateRange = "3.25% - 3.50%";
+    let bojRate = 0.50; // BOJ 升息後
+    let usdJpy = 145.0; // 近期匯率區間
+    let usdJpyWeeklyChange = 0.0;
+
+    let fedIsLive = false;
+    let bojIsLive = false;
+    let usdJpyIsLive = false;
 
     let inflationDiff = 1.5;
     if (FRED_API_KEY) {
@@ -1020,17 +1049,15 @@ async function startServer() {
 
         if (fedFetch !== null) {
           fedRate = fedFetch;
-          if (fedRate >= 5.0 && fedRate <= 5.5) {
-            fedRateRange = "5.25% - 5.50%";
-          } else {
-            const lower = Math.floor(fedRate * 4) / 4;
-            const upper = lower + 0.25;
-            fedRateRange = `${lower.toFixed(2)}% - ${upper.toFixed(2)}%`;
-          }
+          fedIsLive = true;
+          const lower = Math.floor(fedRate * 4) / 4;
+          const upper = lower + 0.25;
+          fedRateRange = `${lower.toFixed(2)}% - ${upper.toFixed(2)}%`;
         }
 
         if (bojFetch !== null) {
           bojRate = bojFetch;
+          bojIsLive = true;
         }
 
         inflationDiff = calculatedInflationDiff;
@@ -1043,6 +1070,7 @@ async function startServer() {
       const usdJpyQuote = await yahooFinance.quote('JPY=X');
       if (usdJpyQuote && usdJpyQuote.regularMarketPrice) {
         usdJpy = usdJpyQuote.regularMarketPrice;
+        usdJpyIsLive = true;
       }
 
       const chartData = await yahooFinance.chart('JPY=X', {
@@ -1058,7 +1086,7 @@ async function startServer() {
           usdJpyWeeklyChange = Number(rawChange.toFixed(2));
         }
       } else if (usdJpyQuote.regularMarketChangePercent !== undefined) {
-        usdJpyWeeklyChange = Number((usdJpyQuote.regularMarketChangePercent ?? 1.2).toFixed(2));
+        usdJpyWeeklyChange = Number((usdJpyQuote.regularMarketChangePercent ?? 0.0).toFixed(2));
       }
     } catch (e) {
       console.error('[carry] Yahoo Finance fetch error:', e);
@@ -1078,6 +1106,25 @@ async function startServer() {
 
     const riskLevel = BOJ_HIKE_PROB >= 60 ? 'HIGH' : BOJ_HIKE_PROB >= 40 ? 'MODERATE' : 'LOW';
 
+    // ⚠️ 每年1月需更新此陣列，來源：https://www.boj.or.jp/en/mopo/mpmsche_mpi/
+    const BOJ_MEETING_SCHEDULE_2026 = [
+      { name: '6月會議', start: '2026-06-15', end: '2026-06-16' },
+      { name: '7月會議', start: '2026-07-30', end: '2026-07-31' },
+      { name: '9月會議', start: '2026-09-18', end: '2026-09-19' },
+      { name: '10月會議', start: '2026-10-28', end: '2026-10-29' },
+      { name: '12月會議', start: '2026-12-18', end: '2026-12-19' },
+    ];
+
+    const now = new Date();
+    const nextMeeting = BOJ_MEETING_SCHEDULE_2026.find(m => new Date(m.end + 'T18:00:00+09:00') > now) ?? null;
+
+    const daysUntilMeeting = nextMeeting
+      ? Math.ceil((new Date(nextMeeting.start + 'T00:00:00+09:00').getTime() - now.getTime()) / (1000 * 60 * 60 * 24))
+      : null;
+
+    const startParts = nextMeeting ? nextMeeting.start.split('-') : [];
+    const endParts = nextMeeting ? nextMeeting.end.split('-') : [];
+
     const results = {
       fedRate,
       fedRateRange,
@@ -1093,6 +1140,19 @@ async function startServer() {
       bojProbIsEnvOverride: !!(process.env.BOJ_HIKE_PROB),
       inflationDiff,
       riskLevel,
+      fedIsLive,
+      bojIsLive,
+      usdJpyIsLive,
+      dataQuality: (fedIsLive && bojIsLive && usdJpyIsLive) ? 'full' : (fedIsLive || usdJpyIsLive) ? 'partial' : 'fallback',
+      bojScheduleLastUpdated: '2026-05-26', // 排程陣列最後人工確認日期
+      nextBojMeeting: nextMeeting ? {
+        name: nextMeeting.name,
+        start: nextMeeting.start,   // "2026-06-15"
+        end: nextMeeting.end,       // "2026-06-16"
+        label: `${startParts[0]}年${Number(startParts[1])}月${Number(startParts[2])}日 ~ ${Number(endParts[2])}日`,
+        shortLabel: `${Number(startParts[1])}月${Number(startParts[2])}日~${Number(endParts[2])}日舉行`,
+        daysUntil: daysUntilMeeting,
+      } : null,
       updatedAt: new Date().toISOString()
     };
 
@@ -1263,23 +1323,314 @@ async function startServer() {
       });
     }
 
-    const PEAK_SHORT = 184223;
+    // 動態計算 peak
+    let peakShort = 184223;
+    let peakDate = '2024-08';
+    let isNewAllTimeHigh = false;
+    let dangerThreshold = 150000;
+    let warningThreshold = 120000;
+    let reductionPct = 56.6;
+    let riskFromPeak = 43.4;
+
+    if (historicalData && historicalData.length > 0) {
+      const currentMonthKey = liveDate ? liveDate.substring(0, 7) : '2026-05';
+      
+      // 找出除了當前月份之外的最大契約數，代表「歷史舊峰值」
+      const historicalWithoutCurrent = historicalData.filter(h => h.date !== currentMonthKey);
+      
+      let previousPeak = 184223;
+      let previousPeakDate = '2024-08';
+      
+      if (historicalWithoutCurrent.length > 0) {
+        let maxHist = historicalWithoutCurrent[0];
+        for (const h of historicalWithoutCurrent) {
+          if (h.contracts > maxHist.contracts) {
+            maxHist = h;
+          }
+        }
+        previousPeak = maxHist.contracts;
+        previousPeakDate = maxHist.date;
+      }
+
+      // 判斷是否創新高 (當前空單大於歷史舊峰值)
+      isNewAllTimeHigh = isLive && (currentShort > previousPeak);
+
+      if (isNewAllTimeHigh) {
+        peakShort = currentShort;
+        peakDate = currentMonthKey;
+        
+        // 計算相對於「前歷史峰值」的超限比例
+        reductionPct = Number(((previousPeak - currentShort) / previousPeak * 100).toFixed(1));
+        riskFromPeak = Number((currentShort / previousPeak * 100).toFixed(1));
+      } else {
+        let maxAll = historicalData[0];
+        for (const h of historicalData) {
+          if (h.contracts > maxAll.contracts) {
+            maxAll = h;
+          }
+        }
+        peakShort = maxAll.contracts;
+        peakDate = maxAll.date;
+
+        reductionPct = Number(((peakShort - currentShort) / peakShort * 100).toFixed(1));
+        riskFromPeak = Number((currentShort / peakShort * 100).toFixed(1));
+      }
+
+      // 動態門檻 calculation
+      dangerThreshold = Math.round(peakShort * 0.81);
+      warningThreshold = Math.round(peakShort * 0.65);
+    }
+
     const results = {
       currentShort,
-      peakShort: PEAK_SHORT,
-      reductionPct: Number(((PEAK_SHORT - currentShort) / PEAK_SHORT * 100).toFixed(1)),
-      riskFromPeak: Number((currentShort / PEAK_SHORT * 100).toFixed(1)),
+      peakShort,
+      peakDate,
+      isNewAllTimeHigh,
+      reductionPct,
+      riskFromPeak,
       historicalData,
       isLive,
       liveDate,
       dataSource,
-      dangerThreshold: 150000,
-      warningThreshold: 120000,
+      dangerThreshold,
+      warningThreshold,
       updatedAt: new Date().toISOString()
     };
 
     cotCache = { data: results, ts: Date.now() };
     res.json(results);
+  });
+
+  // 10. Structural Systemic Risk Radar API (FRED + Fallback)
+  let structuralCache: { data: any; ts: number } | null = null;
+  const STRUCTURAL_CACHE_TTL = 3600000; // 1-hour cache
+
+  function generateFallbackHistory(startVal: number, endVal: number, noiseFactor: number) {
+    const history: Array<{ date: string; value: number }> = [];
+    const startYear = 2025;
+    const startMonth = 5; // May 2025
+    const endYear = 2026;
+    const endMonth = 5; // May 2026
+
+    let currentYear = startYear;
+    let currentMonth = startMonth;
+    const steps = 13;
+
+    for (let i = 0; i < steps; i++) {
+      const ratio = i / (steps - 1);
+      const trend = startVal + (endVal - startVal) * ratio;
+      const noise = Math.sin(i * 1.5) * noiseFactor;
+      const value = Math.max(0, Number((trend + noise).toFixed(2)));
+      const dateStr = `${currentYear}-${String(currentMonth).padStart(2, '0')}`;
+      history.push({ date: dateStr, value });
+
+      currentMonth++;
+      if (currentMonth > 12) {
+        currentMonth = 1;
+        currentYear++;
+      }
+    }
+    return history;
+  }
+
+  const structuralFallbackData = {
+    aiCapex: {
+      hyOas: 310, // bps
+      hyOasHistory: generateFallbackHistory(275, 305, 8),
+      prevMonthAvg: 302,
+      signal: 'yellow' as const,
+      signalLabel: '利差擴大警戒',
+      isLive: false,
+    },
+    geopolitical: {
+      wtiPrice: 78.5,
+      wtiWeeklyChangePct: 1.25,
+      wtiHistory: generateFallbackHistory(72.0, 78.0, 3.5),
+      importPriceYoY: 2.1,
+      importPriceIsLive: false,
+      signal: 'green' as const,
+      signalLabel: '地緣震盪輕微',
+      isLive: false,
+    },
+    nbfi: {
+      finStressIndex: 0.15,
+      finStressHistory: generateFallbackHistory(-0.25, 0.12, 0.08),
+      creditCardDelinquency: 3.20,
+      signal: 'yellow' as const,
+      signalLabel: '影子槓桿上揚',
+      isLive: false,
+    },
+    kEconomy: {
+      creditCardDelinquency: 3.20,
+      autoDelinquency: 2.40,
+      consumerSentiment: 67.4,
+      consumerSentimentHistory: generateFallbackHistory(71.2, 68.0, 1.8),
+      signal: 'yellow' as const,
+      signalLabel: '消費雙軌撕裂',
+      isLive: false,
+    },
+    overallRisk: 'yellow' as const,
+    updatedAt: new Date().toISOString(),
+    dataSource: 'fallback' as const,
+  };
+
+  async function fetchFredSeries(seriesId: string, limit = 100): Promise<Array<{ date: string; value: number }> | null> {
+    const FRED_API_KEY = process.env.FRED_API_KEY;
+    if (!FRED_API_KEY) return null;
+    try {
+      const start = new Date();
+      start.setMonth(start.getMonth() - 14);
+      const startStr = start.toISOString().split('T')[0];
+      const url = `https://api.stlouisfed.org/fred/series/observations?series_id=${seriesId}&api_key=${FRED_API_KEY}&file_type=json&sort_order=asc&observation_start=${startStr}&limit=${limit}`;
+      const res = await fetch(url);
+      if (!res.ok) return null;
+      const data: any = await res.json();
+      
+      const obs = data.observations || [];
+      const validObs = obs
+        .filter((o: any) => o.value !== '.' && o.value !== undefined && o.value !== null)
+        .map((o: any) => ({
+          date: o.date as string,
+          value: Number(o.value),
+        }));
+
+      if (validObs.length === 0) return null;
+      return validObs;
+    } catch (e) {
+      console.error(`[structural-dev] FRED fetch error for ${seriesId}:`, e);
+      return null;
+    }
+  }
+
+  function aggregateMonthly(obs: Array<{ date: string; value: number }>): Array<{ date: string; value: number }> {
+    const monthsMap = new Map<string, number>();
+    for (const o of obs) {
+      const monthKey = o.date.substring(0, 7);
+      monthsMap.set(monthKey, o.value);
+    }
+    const result = Array.from(monthsMap.entries()).map(([date, value]) => ({ date, value }));
+    result.sort((a, b) => a.date.localeCompare(b.date));
+    return result.slice(-13);
+  }
+
+  app.get('/api/structural', async (req, res) => {
+    if (structuralCache && Date.now() - structuralCache.ts < STRUCTURAL_CACHE_TTL) {
+      return res.json(structuralCache.data);
+    }
+
+    const FRED_API_KEY = process.env.FRED_API_KEY;
+    if (!FRED_API_KEY) {
+      return res.json(structuralFallbackData);
+    }
+
+    try {
+      const [
+        oasRaw,
+        wtiRaw,
+        stressRaw,
+        ccDelinqRaw,
+        autoDelinqRaw,
+        sentimentRaw,
+        importPriceRaw
+      ] = await Promise.all([
+        fetchFredSeries('BAMLH0A0HYM2'),
+        fetchFredSeries('DCOILWTICO'),
+        fetchFredSeries('STLFSI2'),      // STLFSI2 replaces STLFSI4
+        fetchFredSeries('DRCCLACBS'),
+        fetchFredSeries('DRCCLOBS'),     // DRCCLOBS replaces DRSFRMACBS
+        fetchFredSeries('UMCSENT'),
+        fetchFredSeries('IR')
+      ]);
+
+      let aiCapex: any = structuralFallbackData.aiCapex;
+      if (oasRaw && oasRaw.length > 0) {
+        const hyOas = oasRaw[oasRaw.length - 1].value; // directly use the value, no multiplier
+        const hyOasHistory = aggregateMonthly(oasRaw).map(o => ({ date: o.date, value: o.value }));
+        const signal = hyOas < 300 ? 'green' : hyOas <= 500 ? 'yellow' : 'red';
+        const signalLabel = signal === 'green' ? '信用利差正常' : signal === 'yellow' ? '利差擴大警戒' : '信用危險爆發';
+
+        const monthlyHistory = aggregateMonthly(oasRaw);
+        const prevMonthAvg = monthlyHistory.length >= 2
+          ? Number(monthlyHistory[monthlyHistory.length - 2].value.toFixed(0))
+          : null;
+
+        aiCapex = { hyOas, hyOasHistory, prevMonthAvg, signal, signalLabel, isLive: true };
+      }
+
+      let geopolitical: any = structuralFallbackData.geopolitical;
+      if (wtiRaw && wtiRaw.length > 0) {
+        const latestWti = wtiRaw[wtiRaw.length - 1].value;
+        const wtiHistory = aggregateMonthly(wtiRaw);
+        
+        let wtiWeeklyChangePct = 0;
+        if (wtiRaw.length >= 6) {
+          const prevWti = wtiRaw[wtiRaw.length - 6].value;
+          if (prevWti > 0) {
+            wtiWeeklyChangePct = ((latestWti - prevWti) / prevWti) * 100;
+          }
+        }
+        
+        const absWeeklyChange = Math.abs(wtiWeeklyChangePct);
+        const signal = (absWeeklyChange > 7 || latestWti > 90) ? 'red' : (absWeeklyChange >= 3 || latestWti >= 82) ? 'yellow' : 'green';
+        const signalLabel = signal === 'green' ? '油價與通膨穩定' : signal === 'yellow' ? '地緣溢價波動' : '地緣衝突斷鏈';
+
+        let importPriceYoY = 2.1;
+        let importPriceIsLive = false;
+        if (importPriceRaw && importPriceRaw.length >= 13) {
+          const latest = importPriceRaw[importPriceRaw.length - 1].value;
+          const yearAgo = importPriceRaw[importPriceRaw.length - 13].value;
+          if (yearAgo > 0) {
+            importPriceYoY = Number(((latest - yearAgo) / yearAgo * 100).toFixed(1));
+            importPriceIsLive = true;
+          }
+        }
+
+        geopolitical = { wtiPrice: latestWti, wtiWeeklyChangePct, wtiHistory, importPriceYoY, importPriceIsLive, signal, signalLabel, isLive: true };
+      }
+
+      let nbfi: any = structuralFallbackData.nbfi;
+      if (stressRaw && stressRaw.length > 0) {
+        const finStressIndex = stressRaw[stressRaw.length - 1].value;
+        const finStressHistory = aggregateMonthly(stressRaw);
+        const creditCardDelinquency = ccDelinqRaw && ccDelinqRaw.length > 0 ? ccDelinqRaw[ccDelinqRaw.length - 1].value : 3.20;
+        
+        const signal = finStressIndex > 1.0 ? 'red' : finStressIndex >= 0 ? 'yellow' : 'green';
+        const signalLabel = signal === 'green' ? '流動性充沛' : signal === 'yellow' ? '影子融資壓力' : '信用流動性乾涸';
+        nbfi = { finStressIndex, finStressHistory, creditCardDelinquency, signal, signalLabel, isLive: true };
+      }
+
+      let kEconomy: any = structuralFallbackData.kEconomy;
+      if (sentimentRaw && sentimentRaw.length > 0) {
+        const creditCardDelinquency = ccDelinqRaw && ccDelinqRaw.length > 0 ? ccDelinqRaw[ccDelinqRaw.length - 1].value : 3.20;
+        const autoDelinquency = autoDelinqRaw && autoDelinqRaw.length > 0 ? autoDelinqRaw[autoDelinqRaw.length - 1].value : 2.40;
+        const consumerSentiment = sentimentRaw[sentimentRaw.length - 1].value;
+        const consumerSentimentHistory = aggregateMonthly(sentimentRaw);
+        
+        const signal = creditCardDelinquency > 3.5 ? 'red' : creditCardDelinquency >= 2.5 ? 'yellow' : 'green';
+        const signalLabel = signal === 'green' ? '消費基本面健全' : signal === 'yellow' ? 'K型中下階層透支' : '逾期率飆，消費斷崖';
+        kEconomy = { creditCardDelinquency, autoDelinquency, consumerSentiment, consumerSentimentHistory, signal, signalLabel, isLive: true };
+      }
+
+      const signals = [aiCapex.signal, geopolitical.signal, nbfi.signal, kEconomy.signal];
+      const overallRisk = signals.includes('red') ? 'red' : signals.includes('yellow') ? 'yellow' : 'green';
+
+      const liveData = {
+        aiCapex,
+        geopolitical,
+        nbfi,
+        kEconomy,
+        overallRisk,
+        updatedAt: new Date().toISOString(),
+        dataSource: 'fred' as const,
+      };
+
+      structuralCache = { data: liveData, ts: Date.now() };
+      return res.json(liveData);
+
+    } catch (error) {
+      console.error('[structural-dev] Failed to assemble live FRED data:', error);
+      return res.json(structuralFallbackData);
+    }
   });
 
   // Vite middleware for development

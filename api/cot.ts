@@ -165,18 +165,77 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     });
   }
 
-  const PEAK_SHORT = 184223;
+  // 動態計算 peak
+  let peakShort = 184223;
+  let peakDate = '2024-08';
+  let isNewAllTimeHigh = false;
+  let dangerThreshold = 150000;
+  let warningThreshold = 120000;
+  let reductionPct = 56.6;
+  let riskFromPeak = 43.4;
+
+  if (historicalData && historicalData.length > 0) {
+    const currentMonthKey = liveDate ? liveDate.substring(0, 7) : '2026-05';
+    
+    // 找出除了當前月份之外的最大契約數，代表「歷史舊峰值」
+    const historicalWithoutCurrent = historicalData.filter(h => h.date !== currentMonthKey);
+    
+    let previousPeak = 184223;
+    let previousPeakDate = '2024-08';
+    
+    if (historicalWithoutCurrent.length > 0) {
+      let maxHist = historicalWithoutCurrent[0];
+      for (const h of historicalWithoutCurrent) {
+        if (h.contracts > maxHist.contracts) {
+          maxHist = h;
+        }
+      }
+      previousPeak = maxHist.contracts;
+      previousPeakDate = maxHist.date;
+    }
+
+    // 判斷是否創新高 (當前空單大於歷史舊峰值)
+    isNewAllTimeHigh = isLive && (currentShort > previousPeak);
+
+    if (isNewAllTimeHigh) {
+      peakShort = currentShort;
+      peakDate = currentMonthKey;
+      
+      // 計算相對於「前歷史峰值」的超限比例
+      reductionPct = Number(((previousPeak - currentShort) / previousPeak * 100).toFixed(1));
+      riskFromPeak = Number((currentShort / previousPeak * 100).toFixed(1));
+    } else {
+      let maxAll = historicalData[0];
+      for (const h of historicalData) {
+        if (h.contracts > maxAll.contracts) {
+          maxAll = h;
+        }
+      }
+      peakShort = maxAll.contracts;
+      peakDate = maxAll.date;
+
+      reductionPct = Number(((peakShort - currentShort) / peakShort * 100).toFixed(1));
+      riskFromPeak = Number((currentShort / peakShort * 100).toFixed(1));
+    }
+
+    // 動態門檻 calculation
+    dangerThreshold = Math.round(peakShort * 0.81);
+    warningThreshold = Math.round(peakShort * 0.65);
+  }
+
   const results = {
     currentShort,
-    peakShort: PEAK_SHORT,
-    reductionPct: Number(((PEAK_SHORT - currentShort) / PEAK_SHORT * 100).toFixed(1)),
-    riskFromPeak: Number((currentShort / PEAK_SHORT * 100).toFixed(1)),
+    peakShort,
+    peakDate,
+    isNewAllTimeHigh,
+    reductionPct,
+    riskFromPeak,
     historicalData,
     isLive,
     liveDate,
     dataSource,
-    dangerThreshold: 150000,
-    warningThreshold: 120000,
+    dangerThreshold,
+    warningThreshold,
     updatedAt: new Date().toISOString()
   };
 

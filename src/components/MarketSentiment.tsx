@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { motion } from 'motion/react';
-import { Gauge, Activity, AlertCircle, RefreshCcw, TrendingDown, TrendingUp, Users, ShoppingBag, Clock, Calendar, BarChart3, AlertTriangle, Zap } from 'lucide-react';
+import { Gauge, Activity, AlertCircle, RefreshCcw, TrendingDown, TrendingUp, Users, ShoppingBag, Clock, Calendar, BarChart3, AlertTriangle, Zap, Link, ArrowRight, Eye } from 'lucide-react';
 
 interface Sentiment {
   vix: {
@@ -84,6 +84,74 @@ const ECONOMIC_INDICATORS: EconomicIndicator[] = [
   }
 ];
 
+interface SignalProps {
+  status: 'green' | 'yellow' | 'red';
+  label?: string;
+  className?: string;
+}
+
+const SignalLamp: React.FC<SignalProps> = ({ status, label, className = '' }) => {
+  const bgClass = {
+    green: 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.7)]',
+    yellow: 'bg-yellow-500 shadow-[0_0_8px_rgba(234,179,8,0.7)]',
+    red: 'bg-rose-500 shadow-[0_0_10px_rgba(244,63,94,0.9)] animate-pulse',
+  }[status] || 'bg-gray-500';
+
+  return (
+    <div className={`flex items-center gap-1.5 ${className}`}>
+      <span className={`w-2.5 h-2.5 rounded-full ${bgClass}`} />
+      {label && <span className="text-[10px] font-sans font-semibold tracking-wide text-text-dim uppercase">{label}</span>}
+    </div>
+  );
+};
+
+interface SparklineProps {
+  history: Array<{ date: string; value: number }>;
+  color?: string;
+  width?: number;
+  height?: number;
+}
+
+const MiniSparkline: React.FC<SparklineProps> = ({ history, color = '#f97316', width = 76, height = 24 }) => {
+  if (!history || history.length < 2) return null;
+  const values = history.map(h => h.value);
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const range = max - min === 0 ? 1 : max - min;
+  
+  const points = history.map((item, index) => {
+    const x = (index / (history.length - 1)) * width;
+    const y = height - ((item.value - min) / range) * (height - 4) - 2;
+    return `${x},${y}`;
+  }).join(' ');
+
+  const lastVal = values[values.length - 1];
+  const lastY = height - ((lastVal - min) / range) * (height - 4) - 2;
+
+  return (
+    <div className="flex items-center gap-2">
+      <svg width={width} height={height} className="overflow-visible">
+        <polyline
+          fill="none"
+          stroke={color}
+          strokeWidth="1.5"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          className="opacity-75"
+          points={points}
+        />
+        <circle
+          cx={width}
+          cy={lastY}
+          r="2"
+          fill={color}
+          className="animate-pulse"
+        />
+      </svg>
+    </div>
+  );
+};
+
 export default function MarketSentiment() {
   const [sentiment, setSentiment] = useState<Sentiment | null>(null);
   const [macroData, setMacroData] = useState<any>(null);
@@ -91,12 +159,14 @@ export default function MarketSentiment() {
   const [breadthData, setBreadthData] = useState<any>(null);
   const [carryData, setCarryData] = useState<any>(null);
   const [cotData, setCotData] = useState<any>(null);
+  const [structuralData, setStructuralData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [macroLoading, setMacroLoading] = useState(true);
   const [yieldsLoading, setYieldsLoading] = useState(true);
   const [breadthLoading, setBreadthLoading] = useState(true);
   const [carryLoading, setCarryLoading] = useState(true);
   const [cotLoading, setCotLoading] = useState(true);
+  const [structuralLoading, setStructuralLoading] = useState(true);
   const [yieldsError, setYieldsError] = useState<string | null>(null);
   const [error, setError] = useState(false);
 
@@ -145,6 +215,30 @@ export default function MarketSentiment() {
   const isNewPeak = CURRENT_SHORT >= PEAK_SHORT;
   const isDanger = CURRENT_SHORT >= DANGER_THRESHOLD;
   const isWarning = CURRENT_SHORT >= WARNING_THRESHOLD;
+
+  const peakDateLabel = cotData?.peakDate
+    ? cotData.peakDate.replace(/(\d{4})-(\d{2})/, '$1年$2月')
+    : '2024年8月';
+  const isHistoricAug2024 = (cotData?.peakDate ?? '2024-08') === '2024-08';
+
+  const fedLabel = !carryData ? '載入中...' :
+    carryData.fedRate > 4.5 ? 'FOMC 維持高位' :
+    carryData.fedRate > 3.0 ? 'FOMC 降息循環中' :
+    'FOMC 寬鬆模式';
+
+  const bojLabel = !carryData ? '載入中...' :
+    carryData.bojRate > 0.5 ? 'BOJ 積極升息中' :
+    carryData.bojRate > 0.25 ? 'BOJ 升息軌道中' :
+    'BOJ 接近零利率';
+
+  const nextBoj = carryData?.nextBojMeeting;
+  const bojMeetingTitle = nextBoj
+    ? `${nextBoj.label} BOJ 政策會議`
+    : 'BOJ 下次政策會議（日期待公告）';
+  const bojMeetingShortLabel = nextBoj?.shortLabel ?? '日期待公告';
+  const bojMeetingDesc = nextBoj
+    ? `市場高度緊盯日本央行於 <span class="text-rose-400/90 font-bold border-b border-rose-500/30 pb-0.5 font-sans">${nextBoj.label}</span> 召開的決策會議，若政策立場轉鷹，可能提早引發大規模的資金匯回。`
+    : '市場持續緊盯日本央行下次政策會議，若政策立場轉鷹，可能引發大規模的資金匯回。';
 
   let cotStatusColor = 'text-emerald-400 font-bold border border-emerald-500/30 bg-emerald-500/10';
   let cotCardBorder = 'border-emerald-500/20';
@@ -202,17 +296,17 @@ export default function MarketSentiment() {
 
   let dynamicConclusionText = '';
   if (isNewPeak) {
-    dynamicConclusionText = `「空軍兵臨城下，創歷史新高」——當前 ${(CURRENT_SHORT / 10000).toFixed(1)} 萬口空單規模已突破 2024 年 8 月引發全球金融市場震盪的 ${(PEAK_SHORT / 10000).toFixed(1)} 萬口歷史峰值（較峰值暴增 ${displayReductionPct.toFixed(1)}%）。這意味著目前日圓空單擁擠度已凌駕 2024 年引發踩踏的起爆點，面臨極高的高槓桿平倉多殺多隱患。一旦日圓在美日利差縮小或地緣因素引發急升時，極易引發美股及套利方被迫集體斬倉，產生系統性資產價格殺盤風險。`;
+    dynamicConclusionText = `「空軍兵臨城下，創歷史新高」——當前 ${(CURRENT_SHORT / 10000).toFixed(1)} 萬口空單規模已突破並創下歷史新高（較前峰值暴增 ${displayReductionPct.toFixed(1)}%）。此擁擠度已凌駕 2024 年 8 月引發全球金融市場震盪的 ${(isHistoricAug2024 ? (PEAK_SHORT / 10000) : 18.4).toFixed(1)} 萬口歷史事件起爆點（新峰值日期為 ${peakDateLabel}），面臨極高的高槓桿平倉多殺多隱患。一旦日圓在美日利差縮小或地緣因素引發急升時，極易引發美股及套利方被迫集體斬倉，產生系統性資產價格殺盤風險。`;
   } else if (isDanger) {
-    dynamicConclusionText = `「空單堆積，逼近歷史高位」——當前 ${(CURRENT_SHORT / 10000).toFixed(1)} 萬口空單規模已處於極度危險區間（較峰值僅差 ${displayReductionPct.toFixed(1)}%），且大幅超越 ${(DANGER_THRESHOLD / 10000).toFixed(0)} 萬口的危險臨界線。在如此高比例的套利部位下，日圓若出現任何升值風吹草動，皆可能演變成集體踩踏，引發美股資產保證金追繳，面臨高度系統性平倉風險。`;
+    dynamicConclusionText = `「空單堆積，逼近歷史高位」——當前 ${(CURRENT_SHORT / 10000).toFixed(1)} 萬口空單規模已處於極度危險區間（較歷史峰值期（${peakDateLabel}）僅差 ${displayReductionPct.toFixed(1)}%），且大幅超越 ${(DANGER_THRESHOLD / 10000).toFixed(0)} 萬口的危險臨界線。在如此高比例的套利部位下，日圓若出現任何升值風吹草動，皆可能演變成集體踩踏，引發美股資產保證金追繳，面臨高度系統性平倉風險。`;
   } else if (isWarning) {
-    dynamicConclusionText = `「空單進入警戒區間」——當前 ${(CURRENT_SHORT / 10000).toFixed(1)} 萬口空單規模已超越 ${(WARNING_THRESHOLD / 10000).toFixed(0)} 萬口警戒線（較峰值減少 ${displayReductionPct.toFixed(1)}%）。市場套利槓桿顯著回升，儘管尚未打破 historical peak，但日圓如果快速升值，空單部位平倉壓力將迅速轉為實質踩踏風險，需嚴格監看日圓走勢。`;
+    dynamicConclusionText = `「空單進入警戒區間」——當前 ${(CURRENT_SHORT / 10000).toFixed(1)} 萬口空單規模已超越 ${(WARNING_THRESHOLD / 10000).toFixed(0)} 萬口警戒線（較歷史峰值期（${peakDateLabel}）減少 ${displayReductionPct.toFixed(1)}%）。市場套利槓桿顯著回升，儘管尚未打破新高，但日圓如果快速升值，空單部位平倉壓力將迅速轉為實質踩踏風險，需嚴格監看日圓走勢。`;
   } else {
-    dynamicConclusionText = `「車上的人已少了一半以上」——當前 ${(CURRENT_SHORT / 10000).toFixed(1)} 萬口空單規模（較峰值減少 ${displayReductionPct.toFixed(1)}%），遠低於 2024 年引發踩踏的 ${(PEAK_SHORT / 10000).toFixed(1)} 萬口峰值。就算日圓突然升值，被強制斷頭的投機客規模已大幅縮減，系統性拋售美股的連鎖反應風險顯著降低。`;
+    dynamicConclusionText = `「車上的人已少了一半以上」——當前 ${(CURRENT_SHORT / 10000).toFixed(1)} 萬口空單規模（較歷史峰值期（${peakDateLabel}）減少 ${displayReductionPct.toFixed(1)}%），遠低於歷史峰值 ${(PEAK_SHORT / 10000).toFixed(1)} 萬口。就算日圓突然升值，被強制斷頭的投機客規模已大幅縮減，系統性拋售美股的連鎖反應風險顯著降低。`;
   }
 
   let monitoringText = isNewPeak || isDanger
-    ? `🚨 當前空單部位已處於極度危險的邊緣 (${(CURRENT_SHORT / 10000).toFixed(1)} 萬口)，任何日圓急升走勢均可能重演 2024 年 8 月的套利交易平倉潮，請高度戒備美股連鎖風險。`
+    ? `🚨 當前空單部位已處於極度危險的邊緣 (${(CURRENT_SHORT / 10000).toFixed(1)} 萬口)，任何日圓急升走勢均可能重演${isHistoricAug2024 ? ' 2024 年 8 月' : ` ${peakDateLabel}（歷史峰值時期）`}的套利交易平倉潮，請高度戒備美股連鎖風險。`
     : `⚠️ 仍需監控：若空單快速回升至 ${(WARNING_THRESHOLD/10000).toFixed(0)} 萬口以上，需重新評估風險等級。`;
 
   useEffect(() => {
@@ -314,12 +408,27 @@ export default function MarketSentiment() {
       }
     };
 
+    const fetchStructural = async () => {
+      setStructuralLoading(true);
+      try {
+        const res = await fetch('/api/structural');
+        if (!res.ok) throw new Error('Structural API failed');
+        const data = await res.json();
+        setStructuralData(data);
+      } catch (e) {
+        console.error('Error fetching structural data:', e);
+      } finally {
+        setStructuralLoading(false);
+      }
+    };
+
     fetchSentiment();
     fetchMacro();
     fetchYields();
     fetchBreadth();
     fetchCarry();
     fetchCOT();
+    fetchStructural();
   }, []);
 
   if (loading || !sentiment) {
@@ -912,6 +1021,31 @@ export default function MarketSentiment() {
                     <span className="text-[10px] font-bold text-text-dim uppercase mb-1 text-center">Top10 200MA以上</span>
                     <span className="text-xl font-mono font-bold text-text-bright">{typeof breadthData.top10AboveMa200Pct === 'number' ? `${breadthData.top10AboveMa200Pct}%` : '--'}</span>
                   </div>
+
+                  {breadthData.concentration.top10WeightEstimate !== undefined && (
+                    <div className="bg-card-bg/50 p-3 rounded-xl border border-border-subtle col-span-2 flex items-center justify-between">
+                      <div className="flex flex-col text-left">
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-[10px] font-bold text-text-dim uppercase tracking-wider">Top 10 S&P 500 總權重</span>
+                          {breadthData.concentration.top10WeightIsLive ? (
+                            <span className="text-[8px] px-1 py-0.2 rounded bg-emerald-500/20 text-emerald-400 font-mono border border-emerald-500/30 uppercase font-bold">
+                              LIVE
+                            </span>
+                          ) : (
+                            <span className="text-[8px] px-1 py-0.2 rounded bg-amber-500/20 text-amber-400 font-mono border border-amber-500/30 font-bold">
+                              估算值
+                            </span>
+                          )}
+                        </div>
+                        <span className="text-[9px] text-text-dim/80 mt-0.5 leading-tight">
+                          前十強市值佔比，反映巨頭吸金程度與防禦力
+                        </span>
+                      </div>
+                      <span className="text-xl font-mono font-bold text-amber-400 pl-2">
+                        {breadthData.concentration.top10WeightEstimate}%
+                      </span>
+                    </div>
+                  )}
                 </div>
 
                 <div className="mt-6 space-y-4">
@@ -1121,6 +1255,423 @@ export default function MarketSentiment() {
         </div>
       </section>
 
+      {/* 結構性系統風險雷達 */}
+      {(() => {
+        const sd = structuralData || {
+          aiCapex: { hyOas: 310, hyOasHistory: [], prevMonthAvg: 302, signal: 'yellow' as const, signalLabel: '利差擴大警戒', isLive: false },
+          geopolitical: { wtiPrice: 78.5, wtiWeeklyChangePct: 1.25, wtiHistory: [], importPriceYoY: 2.1, importPriceIsLive: false, signal: 'green' as const, signalLabel: '地緣震盪輕微', isLive: false },
+          nbfi: { finStressIndex: 0.15, finStressHistory: [], creditCardDelinquency: 3.20, signal: 'yellow' as const, signalLabel: '影子槓桿上揚', isLive: false },
+          kEconomy: { creditCardDelinquency: 3.20, autoDelinquency: 2.40, consumerSentiment: 67.4, consumerSentimentHistory: [], signal: 'yellow' as const, signalLabel: '消費雙軌撕裂', isLive: false },
+          overallRisk: 'yellow' as const,
+          updatedAt: new Date().toISOString(),
+          dataSource: 'fallback'
+        };
+
+        const radarUpdateLabel = sd.updatedAt 
+          ? new Date(sd.updatedAt).toLocaleDateString('zh-TW', { year: 'numeric', month: '2-digit' }) 
+          : '2026/05';
+
+        const getSignalColorClass = (sig: 'green' | 'yellow' | 'red') => {
+          if (sig === 'red') return { border: 'border-l-rose-500 hover:border-rose-500/30', badge: 'bg-rose-500/10 text-rose-400 border-rose-500/20' };
+          if (sig === 'yellow') return { border: 'border-l-amber-500 hover:border-amber-500/30', badge: 'bg-amber-500/10 text-amber-400 border-amber-500/20' };
+          return { border: 'border-l-emerald-500 hover:border-emerald-500/30', badge: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' };
+        };
+
+        return (
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.5, delay: 0.1 }}
+            className="sleek-card p-6 mt-8"
+          >
+            <div className="flex justify-between items-center mb-4">
+              <div className="flex items-center gap-2">
+                <AlertTriangle className="w-5 h-5 text-rose-500" />
+                <h3 className="card-title text-text-bright font-bold m-0">結構性系統風險雷達</h3>
+              </div>
+              <div className="text-[10px] text-text-bright font-bold uppercase tracking-widest bg-white/5 px-3 py-1 rounded-full border border-white/10 flex items-center gap-2">
+                <SignalLamp status={sd.overallRisk} label={sd.overallRisk === 'red' ? '⚠️ CRITICAL RISK' : sd.overallRisk === 'yellow' ? '⚠️ MEDIUM RISK' : '✅ LOW RISK'} />
+                <span className="border-l border-white/10 pl-2 text-rose-400">STRUCTURAL RISK</span>
+              </div>
+            </div>
+            <p className="text-xs text-text-dim mb-6">
+              CPI/PPI 是表象指標，以下為底層結構性乾柴——任一引爆均可觸發骨牌效應
+            </p>
+
+            {/* 核心連鎖骨牌 */}
+            <div className="flex flex-col lg:flex-row items-center justify-between gap-3 p-4 rounded-xl bg-dashboard-bg/30 border border-border-subtle/50 mb-6">
+              {[
+                { text: '地緣政治/關稅', color: 'text-amber-400 bg-amber-500/10 border-amber-500/20' },
+                { text: '停滯性通膨', color: 'text-orange-400 bg-orange-500/10 border-orange-500/20' },
+                { text: '央行無法降息', color: 'text-red-400 bg-red-500/10 border-red-500/20' },
+                { text: '影子銀行/AI泡沫引爆', color: 'text-rose-400 bg-rose-500/10 border-rose-500/20' },
+                { text: '系統性崩盤 💥', color: 'text-pink-400 bg-pink-500/20 border-pink-500/40 animate-pulse ring-1 ring-pink-500/30' }
+              ].map((item, index, arr) => (
+                <React.Fragment key={index}>
+                  <div className={`px-4 py-2.5 rounded-lg border text-xs font-bold font-sans tracking-wide ${item.color} text-center flex-1 w-full lg:w-auto`}>
+                    {item.text}
+                  </div>
+                  {index < arr.length - 1 && (
+                    <ArrowRight className="w-4 h-4 text-text-dim/40 shrink-0 lg:rotate-0 rotate-90 my-1 lg:my-0" />
+                  )}
+                </React.Fragment>
+              ))}
+            </div>
+
+            {/* 四燈總覽橫向儀表板 */}
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-6 bg-dashboard-bg/20 border border-border-subtle/50 rounded-xl p-3.5">
+              <div className="flex items-center justify-between p-2 rounded-lg bg-card-bg/20 border border-border-subtle/30">
+                <div>
+                  <span className="text-[9px] text-text-dim tracking-wider block uppercase font-mono">AI 信貸利差</span>
+                  <span className="text-xs font-mono font-bold text-text-bright">{(sd.aiCapex.hyOas ?? 310).toFixed(0)} bps</span>
+                </div>
+                <SignalLamp status={sd.aiCapex.signal} />
+              </div>
+
+              <div className="flex items-center justify-between p-2 rounded-lg bg-card-bg/20 border border-border-subtle/30">
+                <div>
+                  <span className="text-[9px] text-text-dim tracking-wider block uppercase font-mono">WTI 原油價格</span>
+                  <span className="text-xs font-mono font-bold text-text-bright">${(sd.geopolitical.wtiPrice ?? 78.5).toFixed(1)}</span>
+                </div>
+                <div className="flex flex-col items-end">
+                  <SignalLamp status={sd.geopolitical.signal} />
+                  <span className={`text-[8px] font-mono mt-0.5 ${sd.geopolitical.wtiWeeklyChangePct >= 0 ? 'text-rose-400' : 'text-emerald-400'}`}>
+                    {sd.geopolitical.wtiWeeklyChangePct >= 0 ? '+' : ''}{(sd.geopolitical.wtiWeeklyChangePct ?? 1.2).toFixed(1)}% (週)
+                  </span>
+                </div>
+              </div>
+
+              <div className="flex items-center justify-between p-2 rounded-lg bg-card-bg/20 border border-border-subtle/30">
+                <div>
+                  <span className="text-[9px] text-text-dim tracking-wider block uppercase font-mono">金融壓力指數</span>
+                  <span className="text-xs font-mono font-bold text-text-bright">{(sd.nbfi.finStressIndex ?? 0.15).toFixed(2)}</span>
+                </div>
+                <SignalLamp status={sd.nbfi.signal} />
+              </div>
+
+              <div className="flex items-center justify-between p-2 rounded-lg bg-card-bg/20 border border-border-subtle/30">
+                <div>
+                  <span className="text-[9px] text-text-dim tracking-wider block uppercase font-mono">雙軌消費逾期</span>
+                  <span className="text-xs font-mono font-bold text-text-bright">{(sd.kEconomy.creditCardDelinquency ?? 3.20).toFixed(2)}%</span>
+                </div>
+                <SignalLamp status={sd.kEconomy.signal} />
+              </div>
+            </div>
+
+            {/* 四張卡片 */}
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+              {/* Card 1: AI Capex 泡沫幻滅 */}
+              {(() => {
+                const colors = getSignalColorClass(sd.aiCapex.signal);
+                return (
+                  <div className={`bg-dashboard-bg/30 hover:bg-dashboard-bg/50 border border-border-subtle ${colors.border} transition-all duration-300 rounded-xl p-5 border-l-4 flex flex-col justify-between relative group`}>
+                    <div>
+                      <div className="flex justify-between items-start mb-2">
+                        <div>
+                          <h4 className="text-sm font-bold text-text-bright">AI Capex 泡沫幻滅</h4>
+                          <span className="text-[10px] font-mono font-bold text-text-dim/60 block mt-0.5 uppercase tracking-wide">AI Investment ROI Bubble</span>
+                        </div>
+                        <span className={`text-[9px] font-mono font-bold px-2 py-0.5 rounded ${colors.badge} tracking-wider`}>
+                          {sd.aiCapex.signal === 'red' ? '🔴 CRITICAL' : sd.aiCapex.signal === 'yellow' ? '⚠️ HIGH RISK' : '🟢 SAFE'}
+                        </span>
+                      </div>
+
+                      {/* 即時數據顯示 */}
+                      <div className="flex items-center justify-between my-4 p-3 rounded-lg bg-card-bg/20 border border-border-subtle/30">
+                        <div>
+                          <span className="text-[9px] text-text-dim font-mono tracking-wider block uppercase">CRA CREDIT SPREAD (BAMLH0A0HYM2)</span>
+                          <span className="text-xl font-mono font-bold text-text-bright flex items-baseline gap-1">
+                            {sd.aiCapex.hyOas.toFixed(0)}
+                            <span className="text-[11px] text-text-dim font-normal">bps</span>
+                          </span>
+                          <span className="text-[9px] text-text-dim mt-0.5 block">
+                            上月均值 {sd.aiCapex.prevMonthAvg ? `${sd.aiCapex.prevMonthAvg} bps` : '--'} ({sd.aiCapex.isLive ? 'FRED Live' : 'Fallback'})
+                          </span>
+                        </div>
+                        <div className="flex flex-col items-end gap-1.5 shrink-0">
+                          <SignalLamp status={sd.aiCapex.signal} label={sd.aiCapex.signalLabel} />
+                          <MiniSparkline history={sd.aiCapex.hyOasHistory} color="#f97316" />
+                        </div>
+                      </div>
+
+                      <div className="space-y-3 text-xs font-sans text-text-dim">
+                        <div className="bg-card-bg/25 p-3 rounded-lg border border-border-subtle/30">
+                          <div className="flex items-center gap-1.5 text-orange-400 font-bold mb-1">
+                            <Zap className="w-3.5 h-3.5 shrink-0" />
+                            <span>雪崩觸發點</span>
+                          </div>
+                          <p className="leading-relaxed text-[11px]">
+                            2026年中，Hyperscalers（微軟、Google、AWS、Meta）的雲端 AI 基礎建設投入數千億美元，若在消費端或企業端遲遲無法轉化為實質利潤，「AI ROI 證偽」將引發嚴重的 Capex 砍單潮。
+                          </p>
+                        </div>
+                        <div className="bg-card-bg/25 p-3 rounded-lg border border-border-subtle/30">
+                          <div className="flex items-center gap-1.5 text-text-secondary font-bold mb-1">
+                            <Link className="w-3.5 h-3.5 shrink-0" />
+                            <span>連鎖反應</span>
+                          </div>
+                          <p className="leading-relaxed text-[11px]">
+                            整個半導體供應鏈、伺服器代工、AI 晶片巨頭集體估值「雙殺」——獲利下滑（EPS↓）加估值修正（P/E↓），科技權值股面臨集體崩盤壓力。
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+                    <div className="mt-4 pt-3 border-t border-border-subtle/40">
+                      <div className="flex items-center gap-1 text-[10px] font-bold text-orange-400 mb-2">
+                        <Eye className="w-3.5 h-3.5" />
+                        <span>關鍵監控指標</span>
+                      </div>
+                      <div className="flex flex-wrap gap-1.5">
+                        {["Hyperscaler 財報 Capex 指引", "AI 企業採用率", "NVDA 毛利率趨勢", "雲端收入 YoY"].map(tag => (
+                          <span key={tag} className="text-[9px] px-2 py-0.5 rounded-full bg-white/5 border border-white/10 text-text-dim font-mono">
+                            {tag}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()}
+
+              {"      "}{/* Card 2: 地緣政治碎裂化 */}
+              {(() => {
+                const colors = getSignalColorClass(sd.geopolitical.signal);
+                return (
+                  <div className={`bg-dashboard-bg/30 hover:bg-dashboard-bg/50 border border-border-subtle ${colors.border} transition-all duration-300 rounded-xl p-5 border-l-4 flex flex-col justify-between relative group`}>
+                    <div>
+                      <div className="flex justify-between items-start mb-2">
+                        <div>
+                          <h4 className="text-sm font-bold text-text-bright">地緣政治碎裂化</h4>
+                          <span className="text-[10px] font-mono font-bold text-text-dim/60 block mt-0.5 uppercase tracking-wide">Geoeconomic Fragmentation & Supply Chain</span>
+                        </div>
+                        <span className={`text-[9px] font-mono font-bold px-2 py-0.5 rounded ${colors.badge} tracking-wider`}>
+                          {sd.geopolitical.signal === 'red' ? '🔴 CRITICAL' : sd.geopolitical.signal === 'yellow' ? '⚠️ ELEVATED' : '🟢 SAFE'}
+                        </span>
+                      </div>
+
+                      {/* 即時數據顯示 */}
+                      <div className="flex items-center justify-between my-4 p-3 rounded-lg bg-card-bg/20 border border-border-subtle/30">
+                        <div>
+                          <span className="text-[9px] text-text-dim font-mono tracking-wider block uppercase">WTI CRUDE OIL (DCOILWTICO)</span>
+                          <span className="text-xl font-mono font-bold text-text-bright flex items-baseline gap-1">
+                            ${sd.geopolitical.wtiPrice.toFixed(1)}
+                            <span className="text-[11px] text-text-dim font-normal">/ bbl</span>
+                            <span className={`text-xs ml-1 font-sans ${sd.geopolitical.wtiWeeklyChangePct >= 0 ? 'text-rose-400' : 'text-emerald-400'}`}>
+                              ({sd.geopolitical.wtiWeeklyChangePct >= 0 ? '↑' : '↓'}{Math.abs(sd.geopolitical.wtiWeeklyChangePct).toFixed(1)}% 週)
+                            </span>
+                          </span>
+                          <span className="text-[9px] text-text-dim mt-0.5 block">
+                            進口價格 YoY: {sd.geopolitical.importPriceYoY > 0 ? '+' : ''}{sd.geopolitical.importPriceYoY.toFixed(1)}% ({sd.geopolitical.importPriceIsLive ? 'FRED Live' : 'Fallback'})
+                          </span>
+                        </div>
+                        <div className="flex flex-col items-end gap-1.5 shrink-0">
+                          <SignalLamp status={sd.geopolitical.signal} label={sd.geopolitical.signalLabel} />
+                          <MiniSparkline history={sd.geopolitical.wtiHistory} color="#f59e0b" />
+                        </div>
+                      </div>
+
+                      <div className="space-y-3 text-xs font-sans text-text-dim">
+                        <div className="bg-card-bg/25 p-3 rounded-lg border border-border-subtle/30">
+                          <div className="flex items-center gap-1.5 text-amber-400 font-bold mb-1">
+                            <Zap className="w-3.5 h-3.5 shrink-0" />
+                            <span>雪崩觸發點</span>
+                          </div>
+                          <p className="leading-relaxed text-[11px]">
+                            ① 中東衝突擴大至能源基礎設施（油田、海峽航道）實質毀損 → 油價暴漲；② 全面性高關稅貿易戰升級 → 成本轉嫁形成「停滯性通膨（Stagflation）」。
+                          </p>
+                        </div>
+                        <div className="bg-card-bg/25 p-3 rounded-lg border border-border-subtle/30">
+                          <div className="flex items-center gap-1.5 text-text-secondary font-bold mb-1">
+                            <Link className="w-3.5 h-3.5 shrink-0" />
+                            <span>市場盲點</span>
+                          </div>
+                          <p className="leading-relaxed text-[11px]">
+                            當前美股風險溢酬（Risk Premium）處於歷史低位，市場幾乎沒有對「半導體+能源雙斷鏈」進行任何風險定價，一旦定價修正將極為劇烈。
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+                    <div className="mt-4 pt-3 border-t border-border-subtle/40">
+                      <div className="flex items-center gap-1 text-[10px] font-bold text-amber-400 mb-2">
+                        <Eye className="w-3.5 h-3.5" />
+                        <span>關鍵監控指標</span>
+                      </div>
+                      <div className="flex flex-wrap gap-1.5">
+                        {["WTI 油價", "波斯灣航運指數", "美中關稅清單", "CHIPS Act 執行進度"].map(tag => (
+                          <span key={tag} className="text-[9px] px-2 py-0.5 rounded-full bg-white/5 border border-white/10 text-text-dim font-mono">
+                            {tag}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()}
+
+              {"      "}{/* Card 3: NBFI 影子銀行流動性炸彈 */}
+              {(() => {
+                const colors = getSignalColorClass(sd.nbfi.signal);
+                return (
+                  <div className={`bg-dashboard-bg/30 hover:bg-dashboard-bg/50 border border-border-subtle ${colors.border} transition-all duration-300 rounded-xl p-5 border-l-4 flex flex-col justify-between relative group`}>
+                    <div>
+                      <div className="flex justify-between items-start mb-2">
+                        <div>
+                          <h4 className="text-sm font-bold text-text-bright">NBFI 影子銀行流動性炸彈</h4>
+                          <span className="text-[10px] font-mono font-bold text-text-dim/60 block mt-0.5 uppercase tracking-wide">Non-Bank Financial Institutions Leverage Risk</span>
+                        </div>
+                        <span className={`text-[9px] font-mono font-bold px-2 py-0.5 rounded ${colors.badge} tracking-wider`}>
+                          {sd.nbfi.signal === 'red' ? '🔴 CRITICAL' : sd.nbfi.signal === 'yellow' ? '⚠️ HIGH RISK' : '🟢 SAFE'}
+                        </span>
+                      </div>
+
+                      {/* 即時數據顯示 */}
+                      <div className="flex items-center justify-between my-4 p-3 rounded-lg bg-card-bg/20 border border-border-subtle/30">
+                        <div>
+                          <span className="text-[9px] text-text-dim font-mono tracking-wider block uppercase">FED FINANCIAL STRESS INDEX (STLFSI2)</span>
+                          <span className="text-xl font-mono font-bold text-text-bright flex items-baseline gap-1">
+                            {sd.nbfi.finStressIndex.toFixed(2)}
+                            <span className="text-[11px] text-text-dim font-normal">pts</span>
+                          </span>
+                          <span className="text-[9px] text-text-dim mt-0.5 block">信用卡逾期率: {sd.nbfi.creditCardDelinquency.toFixed(2)}% ({sd.nbfi.isLive ? 'FRED Live' : 'Fallback'})</span>
+                        </div>
+                        <div className="flex flex-col items-end gap-1.5 shrink-0">
+                          <SignalLamp status={sd.nbfi.signal} label={sd.nbfi.signalLabel} />
+                          <MiniSparkline history={sd.nbfi.finStressHistory} color="#f43f5e" />
+                        </div>
+                      </div>
+
+                      <div className="space-y-3 text-xs font-sans text-text-dim">
+                        <div className="bg-card-bg/25 p-3 rounded-lg border border-border-subtle/30">
+                          <div className="flex items-center gap-1.5 text-rose-400 font-bold mb-1">
+                            <Zap className="w-3.5 h-3.5 shrink-0" />
+                            <span>雪崩觸發點</span>
+                          </div>
+                          <p className="leading-relaxed text-[11px]">
+                            「Higher for Longer」高利率維持超預期久，大量中型企業的私有信貸（Private Credit）違約率默默飆升。影子銀行缺乏聯準會直接流動性支持。
+                          </p>
+                        </div>
+                        <div className="bg-card-bg/25 p-3 rounded-lg border border-border-subtle/30">
+                          <div className="flex items-center gap-1.5 text-text-secondary font-bold mb-1">
+                            <Link className="w-3.5 h-3.5 shrink-0" />
+                            <span>連鎖反應</span>
+                          </div>
+                          <p className="leading-relaxed text-[11px]">
+                            一旦大型對沖基金或私有信貸基金因「Crowded Trades + 高槓桿」爆倉，被迫變現（Forced Deleveraging）。為籌現金，將優先拋售流動性最好的資產——美股科技龍頭、台股權值股——觸發「資產越好越被砸盤」的金融海嘯式雪崩。
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+                    <div className="mt-4 pt-3 border-t border-border-subtle/40">
+                      <div className="flex items-center gap-1 text-[10px] font-bold text-rose-400 mb-2">
+                        <Eye className="w-3.5 h-3.5" />
+                        <span>關鍵監控指標</span>
+                      </div>
+                      <div className="flex flex-wrap gap-1.5">
+                        {["Private Credit 違約率", "高收益債 OAS 利差", "對沖基金槓桿率", "Repo Market 壓力"].map(tag => (
+                          <span key={tag} className="text-[9px] px-2 py-0.5 rounded-full bg-white/5 border border-white/10 text-text-dim font-mono">
+                            {tag}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()}
+
+              {"      "}{/* Card 4: K 型經濟撕裂與消費斷崖 */}
+              {(() => {
+                const colors = getSignalColorClass(sd.kEconomy.signal);
+                return (
+                  <div className={`bg-dashboard-bg/30 hover:bg-dashboard-bg/50 border border-border-subtle ${colors.border} transition-all duration-300 rounded-xl p-5 border-l-4 flex flex-col justify-between relative group`}>
+                    <div>
+                      <div className="flex justify-between items-start mb-2">
+                        <div>
+                          <h4 className="text-sm font-bold text-text-bright">K 型經濟撕裂與消費斷崖</h4>
+                          <span className="text-[10px] font-mono font-bold text-text-dim/60 block mt-0.5 uppercase tracking-wide">K-shaped Economy & Consumer Credit Fracture</span>
+                        </div>
+                        <span className={`text-[9px] font-mono font-bold px-2 py-0.5 rounded ${colors.badge} tracking-wider`}>
+                          {sd.kEconomy.signal === 'red' ? '🔴 CRITICAL' : sd.kEconomy.signal === 'yellow' ? '⚠️ WATCH' : '🟢 SAFE'}
+                        </span>
+                      </div>
+
+                      {/* 即時數據顯示 */}
+                      <div className="flex items-center justify-between my-4 p-3 rounded-lg bg-card-bg/20 border border-border-subtle/30">
+                        <div>
+                          <span className="text-[9px] text-text-dim font-mono tracking-wider block uppercase">CC DELINQUENCY & SENTIMENT (UMCSENT)</span>
+                          <span className="text-xl font-mono font-bold text-text-bright flex items-baseline gap-1.5">
+                            {sd.kEconomy.creditCardDelinquency.toFixed(2)}%
+                            <span className="text-[11px] font-normal text-text-dim">逾期</span>
+                            <span className="border-l border-white/10 pl-2 ml-1 text-text-bright text-[13px] font-normal font-sans">
+                              信心指數: {sd.kEconomy.consumerSentiment.toFixed(1)}
+                            </span>
+                          </span>
+                          <span className="text-[9px] text-text-dim mt-0.5 block">消費性貸款逾期率 (DRCCLOBS): {sd.kEconomy.autoDelinquency.toFixed(2)}% ({sd.kEconomy.isLive ? 'FRED Live' : 'Fallback'})</span>
+                        </div>
+                        <div className="flex flex-col items-end gap-1.5 shrink-0">
+                          <SignalLamp status={sd.kEconomy.signal} label={sd.kEconomy.signalLabel} />
+                          <MiniSparkline history={sd.kEconomy.consumerSentimentHistory} color="#a855f7" />
+                        </div>
+                      </div>
+
+                      <div className="space-y-3 text-xs font-sans text-text-dim">
+                        <div className="bg-card-bg/25 p-3 rounded-lg border border-border-subtle/30">
+                          <div className="flex items-center gap-1.5 text-purple-400 font-bold mb-1">
+                            <Zap className="w-3.5 h-3.5 shrink-0" />
+                            <span>核心矛盾</span>
+                          </div>
+                          <p className="leading-relaxed text-[11px]">
+                            頂端 20% 靠股市資產膨脹持續消費，但底層 80% 正被高居住成本、信用卡與汽車貸款利率榨乾，形成深度撕裂。
+                          </p>
+                        </div>
+                        <div className="bg-card-bg/25 p-3 rounded-lg border border-border-subtle/30">
+                          <div className="flex items-center gap-1.5 text-text-secondary font-bold mb-1">
+                            <Link className="w-3.5 h-3.5 shrink-0" />
+                            <span>雪崩觸發點</span>
+                          </div>
+                          <p className="leading-relaxed text-[11px]">
+                            信用卡與汽車貸款違約率已升至警戒線。一旦寒氣傳導至頂端，全美零售消費（佔 GDP 70%）出現斷崖式下滑，市場將從定價「軟著陸」瞬間轉為定價「硬著陸/衰退」。
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+                    <div className="mt-4 pt-3 border-t border-border-subtle/40">
+                      <div className="flex items-center gap-1 text-[10px] font-bold text-purple-400 mb-2">
+                        <Eye className="w-3.5 h-3.5" />
+                        <span>關鍵監控指標</span>
+                      </div>
+                      <div className="flex flex-wrap gap-1.5">
+                        {["信用卡逾期率 (Fed Z.1)", "消費性貸款逾期率", "消費者信心指數", "Target/Walmart 同店銷售"].map(tag => (
+                          <span key={tag} className="text-[9px] px-2 py-0.5 rounded-full bg-white/5 border border-white/10 text-text-dim font-mono">
+                            {tag}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()}
+            </div>
+
+            {/* 核心總結欄 */}
+            <div className="mt-5 p-4 rounded-xl bg-rose-500/5 border border-border-subtle border-l-4 border-l-rose-500 flex flex-col md:flex-row md:items-center justify-between gap-4">
+              <div className="flex-1">
+                <h5 className="text-xs font-bold text-rose-400 flex items-center gap-2 mb-1.5">
+                  <span>🎯</span> 最高機率雪崩劇本（骨牌路徑）
+                </h5>
+                <p className="text-[11px] leading-relaxed text-text-dim">
+                  CPI/PPI 是表象的數據指標，底層結構性乾柴的引爆順序最可能為：
+                  地緣政治/關稅衝擊（引發停滯性通膨） → 迫使央行無法降息（Higher for Longer 超預期） →
+                  最終引爆影子銀行槓桿爆倉或 AI Capex 泡沫破裂 → 系統性資產殺盤。
+                  任何單一觸發點的嚴重程度，取決於其他風險因子的累積程度——這是一個相互強化的脆弱系統。
+                </p>
+              </div>
+              <div className="text-[9px] text-text-dim/40 font-mono self-end md:self-center shrink-0">
+                分析更新：{radarUpdateLabel} ({sd.dataSource === 'fred' ? 'Live FRED API' : 'Fallback Data'})
+              </div>
+            </div>
+          </motion.div>
+        );
+      })()}
+
       <div className="sleek-card border-dashed bg-transparent items-center text-center">
         <p className="text-xs text-text-dim leading-relaxed max-w-lg">
           宏觀經濟指標是市場波動的主要驅動力。大非農與 CPI 對利率預期有決定性影響，建議在數據發布前後保持機動艙位管理。
@@ -1164,30 +1715,49 @@ export default function MarketSentiment() {
           <div className="p-4 rounded-xl border border-rose-500/10 bg-rose-500/5 hover:border-rose-500/20 transition-all">
             <div className="flex justify-between items-center mb-1">
               <div className="text-xs text-rose-400 font-bold">聯準會利率</div>
-              {carryData && !carryLoading && (
-                <span className="text-[8px] font-bold text-emerald-400 border border-emerald-500/30 bg-emerald-500/10 px-1.5 py-0.5 rounded uppercase tracking-widest">
-                  Live
+              {carryData?.fedIsLive ? (
+                <span className="text-[9px] px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-400 font-mono border border-emerald-500/30">
+                  FRED LIVE
                 </span>
-              )}
+              ) : carryData ? (
+                <span className="text-[9px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-400 font-mono border border-amber-500/30">
+                  估算值
+                </span>
+              ) : null}
             </div>
             <div className="text-2xl font-mono font-bold text-rose-500">
-              {carryData ? carryData.fedRateRange : '5.25% - 5.50%'}
+              {carryData ? carryData.fedRateRange : (
+                <span className="inline-block w-24 h-6 bg-white/10 rounded animate-pulse" />
+              )}
             </div>
             <div className="text-[11px] text-text-dim mt-1 flex items-center gap-1">
               <span className="w-1.5 h-1.5 rounded-full bg-rose-500"></span>
-              FOMC 維持高位
+              {fedLabel}
             </div>
           </div>
 
           {/* 卡片B: 日銀利率 */}
           <div className="p-4 rounded-xl border border-blue-500/10 bg-blue-500/5 hover:border-blue-500/20 transition-all">
-            <div className="text-xs text-blue-400 font-bold mb-1 font-sans">日銀利率</div>
+            <div className="flex justify-between items-center mb-1">
+              <div className="text-xs text-blue-400 font-bold font-sans">日銀利率</div>
+              {carryData?.bojIsLive ? (
+                <span className="text-[9px] px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-400 font-mono border border-emerald-500/30">
+                  FRED LIVE
+                </span>
+              ) : carryData ? (
+                <span className="text-[9px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-400 font-mono border border-amber-500/30">
+                  估算值
+                </span>
+              ) : null}
+            </div>
             <div className="text-2xl font-mono font-bold text-blue-400">
-              {carryData ? `${carryData.bojRate.toFixed(2)}%` : '0.75%'}
+              {carryData ? `${carryData.bojRate.toFixed(2)}%` : (
+                <span className="inline-block w-24 h-6 bg-white/10 rounded animate-pulse" />
+              )}
             </div>
             <div className="text-[11px] text-text-dim mt-1 flex items-center gap-1">
               <span className="w-1.5 h-1.5 rounded-full bg-blue-400"></span>
-              BOJ 政策利率
+              {bojLabel}
             </div>
           </div>
 
@@ -1195,11 +1765,15 @@ export default function MarketSentiment() {
           <div className="p-4 rounded-xl border border-brand/10 bg-brand/5 hover:border-brand/20 transition-all">
             <div className="text-xs text-brand font-bold mb-1">名目利差</div>
             <div className="text-2xl font-mono font-bold text-brand">
-              {carryData ? `${carryData.nominalSpread.toFixed(2)}%` : '4.50%'}
+              {carryData ? `${carryData.nominalSpread.toFixed(2)}%` : (
+                <span className="inline-block w-24 h-6 bg-white/10 rounded animate-pulse" />
+              )}
             </div>
             <p className="text-[11px] text-text-dim mt-1 flex items-center gap-1">
               <span className="w-1.5 h-1.5 rounded-full bg-brand"></span>
-              實質利差 ≈ {carryData ? `${carryData.realSpread.toFixed(1)}%` : '3.8%'}
+              實質利差 ≈ {carryData ? `${carryData.realSpread.toFixed(1)}%` : (
+                <span className="inline-block w-16 h-4 bg-white/10 rounded animate-pulse ml-1" />
+              )}
             </p>
             {carryData && (
               <p className="text-[9px] text-text-dim/50 mt-1 font-mono">
@@ -1229,10 +1803,14 @@ export default function MarketSentiment() {
               <h4 className="text-sm font-bold text-text-bright mb-3">實質利差縮小臨界</h4>
               <div className="flex items-baseline gap-2 mb-4">
                 <span className="text-3xl font-mono font-bold text-yellow-500">
-                  {carryData ? `${carryData.realSpread.toFixed(2)}%` : '3.8%'}
+                  {carryData ? `${carryData.realSpread.toFixed(2)}%` : (
+                    <span className="inline-block w-24 h-8 bg-white/10 rounded animate-pulse" />
+                  )}
                 </span>
                 <span className="text-xs text-text-secondary">
-                  距警戒線 3.5% (差距 {carryData ? (carryData.realSpread - 3.5).toFixed(2) : '0.3'}%)
+                  距警戒線 3.5% (差距 {carryData ? (carryData.realSpread - 3.5).toFixed(2) : (
+                    <span className="inline-block w-8 h-4 bg-white/10 rounded animate-pulse" />
+                  )}%)
                 </span>
               </div>
             </div>
@@ -1243,7 +1821,7 @@ export default function MarketSentiment() {
                 <div className="h-1.5 w-full bg-border-subtle rounded-full overflow-hidden">
                   <motion.div
                     initial={{ width: 0 }}
-                    animate={{ width: `${carryData ? Math.min(carryData.realSpreadProgress, 100) : 76}%` }}
+                    animate={{ width: `${carryData ? Math.min(carryData.realSpreadProgress, 100) : 0}%` }}
                     transition={{ duration: 1.5 }}
                     className="h-full bg-yellow-500 rounded-full"
                   />
@@ -1251,7 +1829,9 @@ export default function MarketSentiment() {
                 <div className="flex justify-between mt-1">
                   <span className="text-[10px] text-text-dim">安全</span>
                   <span className="text-[10px] text-yellow-500 font-bold">
-                    接近臨界點 ({carryData ? Math.min(carryData.realSpreadProgress, 100).toFixed(0) : 76}%)
+                    {carryData ? `接近臨界點 (${Math.min(carryData.realSpreadProgress, 100).toFixed(0)}%)` : (
+                      <span className="inline-block w-16 h-3 bg-white/10 rounded animate-pulse" />
+                    )}
                   </span>
                 </div>
               </div>
@@ -1268,9 +1848,20 @@ export default function MarketSentiment() {
           <div className="p-4 rounded-xl border border-border-subtle bg-card-bg/40 flex flex-col justify-between">
             <div>
               <div className="flex items-center justify-between mb-2">
-                <span className="text-[10px] font-mono font-bold text-emerald-500 py-0.5 px-2 bg-emerald-500/10 rounded-md">
-                  THRESHOLD 02
-                </span>
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px] font-mono font-bold text-emerald-500 py-0.5 px-2 bg-emerald-500/10 rounded-md">
+                    THRESHOLD 02
+                  </span>
+                  {carryData?.usdJpyIsLive ? (
+                    <span className="text-[9px] px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-400 font-mono border border-emerald-500/30">
+                      LIVE
+                    </span>
+                  ) : carryData ? (
+                    <span className="text-[9px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-400 font-mono border border-amber-500/30">
+                      估算值
+                    </span>
+                  ) : null}
+                </div>
                 <span className="text-xs text-text-dim flex items-center gap-1">
                   危險臨界值: USD/JPY <span className="text-rose-400 font-bold font-sans">下跌</span> 3–5%
                 </span>
@@ -1426,10 +2017,15 @@ export default function MarketSentiment() {
                   <div className="text-3xl font-mono font-bold text-rose-400">
                     {(PEAK_SHORT / 10000).toFixed(1)} <span className="text-lg">萬口</span>
                   </div>
-                  <div className="text-[10px] text-text-dim mt-1">{(PEAK_SHORT).toLocaleString()} contracts · 2024年8月</div>
+                  <div className="text-[10px] text-text-dim mt-1">{(PEAK_SHORT).toLocaleString()} contracts · {cotData?.peakDate ? cotData.peakDate.replace('-', '年') + '月' : '2024年8月'}</div>
                   <div className="mt-3 flex items-center gap-2">
                     <span className="text-[9px] font-bold bg-rose-500/15 text-rose-400 border border-rose-500/20 px-2 py-0.5 rounded-full">
-                      2024年8月暴跌導火線
+                      {cotData?.isNewAllTimeHigh
+                        ? '⚠️ 最新歷史新高峰值'
+                        : isHistoricAug2024
+                          ? '2024年8月暴跌導火線'
+                          : `${peakDateLabel}歷史高位`
+                      }
                     </span>
                   </div>
                 </div>
@@ -1469,8 +2065,43 @@ export default function MarketSentiment() {
                 <div className="mt-2.5 text-[10px] leading-relaxed text-text-bright/90 font-medium">
                   {monitoringText}
                 </div>
+
+                {/* 歷史事件回顧對照 */}
+                <div className="mt-4 pt-4 border-t border-white/10">
+                  <p className="text-[10px] text-text-dim mb-2 leading-relaxed">
+                    ※ 以下為 <span className="text-amber-400">2024年8月</span> 套利崩盤的歷史案例，作為當前風險評估的參照基準
+                    {!isHistoricAug2024 && (
+                      <span className="text-rose-400">（⚠️ 當前峰值已超越該歷史事件，參考意義請結合 {peakDateLabel} 新峰值判讀）</span>
+                    )}
+                  </p>
+                  <div className="flex items-center gap-1.5 text-[10px] font-bold text-text-bright uppercase tracking-wider mb-2.5">
+                    <Clock className="w-3.5 h-3.5 text-rose-400" />
+                    <span>2024年8月｜歷史參考：日圓套利崩盤「市場衝擊與修復歷程」</span>
+                  </div>
+                  <div className="grid grid-cols-3 gap-2 text-center text-[10px]">
+                    <div className="bg-black/25 p-2 rounded border border-white/5 flex flex-col justify-between">
+                      <span className="text-text-dim font-medium">日經 225 指數</span>
+                      <span className="text-rose-400 font-bold font-mono text-xs my-1">修正跌幅 -25.5%</span>
+                      <span className="text-text-bright/70 text-[9px] leading-tight">單日狂瀉 12.4%<br/>花費約 <span className="text-yellow-400 font-bold font-mono">2 個月</span> 震盪修復</span>
+                    </div>
+                    <div className="bg-black/25 p-2 rounded border border-white/5 flex flex-col justify-between">
+                      <span className="text-text-dim font-medium">那斯達克 (Nasdaq)</span>
+                      <span className="text-rose-400 font-bold font-mono text-xs my-1">修正跌幅 -13.1%</span>
+                      <span className="text-text-bright/70 text-[9px] leading-tight">科技巨幅估值洗牌<br/>大約 <span className="text-yellow-400 font-bold font-mono">1.5 個月</span> 重返牛市</span>
+                    </div>
+                    <div className="bg-black/25 p-2 rounded border border-white/5 flex flex-col justify-between">
+                      <span className="text-text-dim font-medium">標普 500 (S&P 500)</span>
+                      <span className="text-rose-400 font-bold font-mono text-xs my-1">修正跌幅 -8.5%</span>
+                      <span className="text-text-bright/70 text-[9px] leading-tight">V型強勢收復<br/>僅用 <span className="text-emerald-400 font-bold font-mono">17 天</span> 創歷史新高</span>
+                    </div>
+                  </div>
+                  <p className="text-[10px] text-text-dim/85 mt-2.5 leading-relaxed">
+                    💡 <span className="font-bold text-text-bright">數據啟示</span>：日圓套利平倉引發的爆發性修正具備「短線殺力極其猛烈、多殺多見底訊號快」之特徵。由於其本質並非實體經濟衰退，而是純保證金流動性踩踏，故在平倉動能釋放完畢後，<span className="text-emerald-400 font-semibold">美股大約在 1.5 個月內便可完全重新踏上牛市軌道</span>（標普更創神速17天收復紀錄），日經則需 2 個月完成底部的修復與橫盤。
+                  </p>
+                </div>
+
                 {!cotData?.isLive && (
-                  <div className="mt-2 p-2 rounded bg-yellow-500/5 border border-yellow-500/10 text-[9px] text-yellow-500/70 leading-relaxed">
+                  <div className="mt-2.5 p-2 rounded bg-yellow-500/5 border border-yellow-500/10 text-[9px] text-yellow-500/70 leading-relaxed">
                     ⚠ 歷史數據為市場估算值，非 CFTC 官方原始數字。如需精確數據，請至 
                     <a href="https://data.nasdaq.com/data/CFTC/097741_FO_ALL_CR" target="_blank" rel="noopener" className="underline ml-1">
                       Nasdaq Data Link
@@ -1614,24 +2245,32 @@ export default function MarketSentiment() {
           </div>
         </div>
 
-        {/* 6. 6月BOJ會議風險卡片 (全寬) */}
+        {/* 6. BOJ會議風險卡片 (全寬二代動態) */}
         <div className="p-4 rounded-xl bg-rose-500/5 border border-rose-500/20 mb-6">
           <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-6">
             <div className="flex items-start gap-3 lg:max-w-[40%] font-sans w-full">
               <Calendar className="w-5 h-5 text-rose-500 mt-1 flex-shrink-0" />
               <div className="flex-1">
                 <div className="flex items-center justify-between gap-2">
-                  <h5 className="text-sm font-bold text-rose-400">2026年6月15日 ~ 16日 BOJ 政策會議</h5>
+                  <h5 className="text-sm font-bold text-rose-400">{bojMeetingTitle}</h5>
                   <span className={`text-[9px] font-bold px-2 py-0.5 rounded-full border uppercase tracking-widest ${bojRiskColor}`}>
                     {bojRiskLevel} RISK
                   </span>
                 </div>
                 <div className="flex items-center gap-1.5 mt-1">
                   <span className="text-xs text-text-bright font-bold">最高風險催化劑</span>
-                  <span className="text-[10px] bg-rose-500/15 text-rose-400 border border-rose-500/30 px-1.5 py-0.2 rounded font-mono font-medium">6月15~16日舉行</span>
+                  <span className="text-[10px] bg-rose-500/15 text-rose-400 border border-rose-500/30 px-1.5 py-0.2 rounded font-mono font-medium">{bojMeetingShortLabel}</span>
                 </div>
                 <p className="text-[11px] text-text-dim mt-1.5">
-                  市場高度緊盯日本央行於 <span className="text-rose-400/90 font-bold border-b border-rose-500/30 pb-0.5 font-sans">6 月 15 日至 16 日</span> 召開的決策會議，若政策立場轉鷹，可能提早引發大規模的資金匯回。
+                  {nextBoj ? (
+                    <>
+                      市場高度緊盯日本央行於 <span className="text-rose-400/90 font-bold border-b border-rose-500/30 pb-0.5 font-sans">{nextBoj.label}</span> 召開的決策會議，若政策立場轉鷹，可能提早引發大規模的資金匯回。
+                    </>
+                  ) : (
+                    <>
+                      市場持續緊盯日本央行下次政策會議，若政策立場轉鷹，可能引發大規模的資金匯回。
+                    </>
+                  )}
                 </p>
               </div>
             </div>
@@ -1639,19 +2278,25 @@ export default function MarketSentiment() {
             <div className="flex-1 grid grid-cols-1 sm:grid-cols-2 gap-4 lg:pl-6 lg:border-l lg:border-border-subtle/50">
               {/* 升息機率 */}
               <div>
-                <div className="flex justify-between items-center text-xs mb-1.5 animate-pulse">
+                <div className="flex justify-between items-center text-xs mb-1.5">
                   <span className="text-text-secondary font-bold">升息機率</span>
                   <span className="font-mono font-bold text-orange-400">
-                    {carryData ? `${carryData.bojHikeProb}%` : '62%'}
-                    <span className="text-[8px] text-text-dim/60 font-normal ml-1 border border-border-subtle px-1 rounded bg-card-bg/50">
-                      {carryData?.bojProbIsEnvOverride ? 'ENV 覆寫' : 'OIS 隱含'}
-                    </span>
+                    {carryData ? (
+                      `${carryData.bojHikeProb}%`
+                    ) : (
+                      <span className="inline-block w-8 h-4 bg-white/10 rounded animate-pulse" />
+                    )}
+                    {carryData && (
+                      <span className="text-[8px] text-text-dim/60 font-normal ml-1 border border-border-subtle px-1 rounded bg-card-bg/50">
+                        {carryData?.bojProbIsEnvOverride ? 'ENV 覆寫' : 'OIS 隱含'}
+                      </span>
+                    )}
                   </span>
                 </div>
                 <div className="h-1.5 w-full bg-border-subtle rounded-full overflow-hidden">
                   <motion.div
                     initial={{ width: 0 }}
-                    animate={{ width: `${carryData ? carryData.bojHikeProb : 62}%` }}
+                    animate={{ width: `${carryData ? carryData.bojHikeProb : 0}%` }}
                     transition={{ duration: 1.5 }}
                     className="h-full bg-orange-500 rounded-full"
                   />
@@ -1663,13 +2308,17 @@ export default function MarketSentiment() {
                 <div className="flex justify-between items-center text-xs mb-1.5">
                   <span className="text-text-secondary font-bold">「升息 + QT」同步宣佈機率</span>
                   <span className="font-mono font-bold text-rose-400">
-                    {carryData ? `${carryData.bojQtProb}%` : '32%'}
+                    {carryData ? (
+                      `${carryData.bojQtProb}%`
+                    ) : (
+                      <span className="inline-block w-8 h-4 bg-white/10 rounded animate-pulse" />
+                    )}
                   </span>
                 </div>
                 <div className="h-1.5 w-full bg-border-subtle rounded-full overflow-hidden">
                   <motion.div
                     initial={{ width: 0 }}
-                    animate={{ width: `${carryData ? carryData.bojQtProb : 32}%` }}
+                    animate={{ width: `${carryData ? carryData.bojQtProb : 0}%` }}
                     transition={{ duration: 1.5 }}
                     className="h-full bg-rose-500 rounded-full"
                   />
