@@ -1621,14 +1621,17 @@ export default function MarketSentiment() {
               <Calendar className="w-5 h-5 text-rose-500 mt-1 flex-shrink-0" />
               <div className="flex-1">
                 <div className="flex items-center justify-between gap-2">
-                  <h5 className="text-sm font-bold text-rose-400">2026年6月 BOJ 政策會議</h5>
+                  <h5 className="text-sm font-bold text-rose-400">2026年6月15日 ~ 16日 BOJ 政策會議</h5>
                   <span className={`text-[9px] font-bold px-2 py-0.5 rounded-full border uppercase tracking-widest ${bojRiskColor}`}>
                     {bojRiskLevel} RISK
                   </span>
                 </div>
-                <p className="text-xs text-text-bright font-bold mt-1">最高風險催化劑</p>
-                <p className="text-[11px] text-text-dim mt-1">
-                  市場高度緊盯日本央行在6月會議中的行動，若政策立場轉鷹，可能提早引發大規模的資金匯回。
+                <div className="flex items-center gap-1.5 mt-1">
+                  <span className="text-xs text-text-bright font-bold">最高風險催化劑</span>
+                  <span className="text-[10px] bg-rose-500/15 text-rose-400 border border-rose-500/30 px-1.5 py-0.2 rounded font-mono font-medium">6月15~16日舉行</span>
+                </div>
+                <p className="text-[11px] text-text-dim mt-1.5">
+                  市場高度緊盯日本央行於 <span className="text-rose-400/90 font-bold border-b border-rose-500/30 pb-0.5 font-sans">6 月 15 日至 16 日</span> 召開的決策會議，若政策立場轉鷹，可能提早引發大規模的資金匯回。
                 </p>
               </div>
             </div>
