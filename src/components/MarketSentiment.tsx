@@ -170,6 +170,28 @@ export default function MarketSentiment() {
   const [yieldsError, setYieldsError] = useState<string | null>(null);
   const [error, setError] = useState(false);
 
+  const fetchYields = React.useCallback(async () => {
+    setYieldsLoading(true);
+    setYieldsError(null);
+    try {
+      const res = await fetch('/api/yields');
+      const data = await res.json();
+      
+      if (data.error) {
+        setYieldsError(data.error === 'FRED_API_KEY_MISSING' ? '尚未設定 FRED API Key' : '數據暫時無法取得');
+      } else if (data.yield2y !== null && data.yield10y !== null) {
+        setYieldsData(data);
+      } else {
+        setYieldsError('數據不完整');
+      }
+    } catch (e) {
+      console.error('Error fetching yields:', e);
+      setYieldsError('連線失敗，請檢查網路');
+    } finally {
+      setYieldsLoading(false);
+    }
+  }, []);
+
   const USDJPY_WEEKLY_CHANGE = carryData?.usdJpyWeeklyChange ?? 1.2; // 當前週漲幅（%），從 API 快取或歷史計算獲取，預設 1.2%
   const USDJPY_WARNING_THRESHOLD = 2.5; // 黃燈臨界
   const USDJPY_DANGER_THRESHOLD = 3.5;  // 紅燈臨界
@@ -341,28 +363,6 @@ export default function MarketSentiment() {
       }
     };
 
-    const fetchYields = async () => {
-      setYieldsLoading(true);
-      setYieldsError(null);
-      try {
-        const res = await fetch('/api/yields');
-        const data = await res.json();
-        
-        if (data.error) {
-          setYieldsError(data.error === 'FRED_API_KEY_MISSING' ? '尚未設定 FRED API Key' : '數據暫時無法取得');
-        } else if (data.yield2y !== null && data.yield10y !== null) {
-          setYieldsData(data);
-        } else {
-          setYieldsError('數據不完整');
-        }
-      } catch (e) {
-        console.error('Error fetching yields:', e);
-        setYieldsError('連線失敗，請檢查網路');
-      } finally {
-        setYieldsLoading(false);
-      }
-    };
-
     const fetchBreadth = async () => {
       setBreadthLoading(true);
       try {
@@ -429,7 +429,7 @@ export default function MarketSentiment() {
     fetchCarry();
     fetchCOT();
     fetchStructural();
-  }, []);
+  }, [fetchYields]);
 
   if (loading || !sentiment) {
     return (
@@ -545,6 +545,12 @@ export default function MarketSentiment() {
         {/* Treasury Yield Curve */}
         <section className="sleek-card md:col-span-2 p-6 overflow-hidden relative">
           <div className="card-title">🏦 美國公債殖利率曲線 (Yield Curve)</div>
+          
+          {yieldsData?.isFallback && !yieldsLoading && (
+            <div className="text-[10px] text-amber-400 bg-amber-500/10 border border-amber-500/20 px-3 py-1.5 rounded-lg font-mono mt-3 inline-flex items-center gap-1.5 self-start">
+              <span>⚠️ 美聯儲 FRED API 暫時不可用，已自動載入備用市場數據。</span>
+            </div>
+          )}
           
           {yieldsLoading ? (
             <div className="flex items-center justify-center h-48">
@@ -818,18 +824,47 @@ export default function MarketSentiment() {
                             const toY = (v: number) => 100 - ((v - yMin) / yRange) * 100;
                             const toX = (i: number) => (i / (dates.length - 1)) * 400;
 
-                            // 為每條線產生 polyline points（跳過 null）
-                            const buildPoints = (arr: (number | null)[]) =>
-                              arr
-                                .map((v, i) => v !== null ? `${toX(i)},${toY(v)}` : null)
-                                .filter(v => v !== null)
-                                .join(' ');
+                            // 為每條線產生段落，遇到 null 時截斷多段（避免直線跳躍）
+                            const buildSegments = (arr: (number | null)[]): string[] => {
+                              const segments: string[] = [];
+                              let current: string[] = [];
+                              
+                              arr.forEach((v, i) => {
+                                if (v !== null) {
+                                  current.push(`${toX(i)},${toY(v)}`);
+                                } else {
+                                  if (current.length >= 2) {
+                                    segments.push(current.join(' '));
+                                  } else if (current.length === 1) {
+                                    segments.push(`${current[0]} ${current[0]}`);
+                                  }
+                                  current = [];
+                                }
+                              });
+                              if (current.length >= 2) {
+                                segments.push(current.join(' '));
+                              } else if (current.length === 1) {
+                                segments.push(`${current[0]} ${current[0]}`);
+                              }
+                              
+                              return segments;
+                            };
 
-                            const points2y = buildPoints(yield2y);
-                            const points10y = buildPoints(yield10y);
-                            const points30y = buildPoints(yield30y);
+                            const segments2y  = buildSegments(yield2y);
+                            const segments10y = buildSegments(yield10y);
+                            const segments30y = buildSegments(yield30y);
                             
-                            const area10y = `0,100 ${points10y} 400,100`;
+                            // 尋找最長 10Y 連續段落來繪製下方填充區
+                            const longestSegment10y = segments10y.reduce((a, b) => a.split(' ').length > b.split(' ').length ? a : b, '');
+                            let area10y = '';
+                            if (longestSegment10y) {
+                              const points = longestSegment10y.split(' ');
+                              if (points.length > 0) {
+                                const firstX = points[0].split(',')[0];
+                                const lastX = points[points.length - 1].split(',')[0];
+                                area10y = `${firstX},100 ${longestSegment10y} ${lastX},100`;
+                              }
+                            }
 
                             const lastNonNull = (arr: (number | null)[]) => {
                               for (let i = arr.length - 1; i >= 0; i--) {
@@ -851,11 +886,22 @@ export default function MarketSentiment() {
                                   </linearGradient>
                                 </defs>
                                 
-                                <polygon points={area10y} fill="url(#chartFill)" />
+                                {area10y && <polygon points={area10y} fill="url(#chartFill)" />}
                                 
-                                <polyline points={points30y} fill="none" stroke="#a855f7" strokeWidth="1.5" strokeDasharray="4,2" />
-                                <polyline points={points10y} fill="none" stroke="#3b82f6" strokeWidth="2.5" />
-                                <polyline points={points2y} fill="none" stroke="#f97316" strokeWidth="1.5" />
+                                {/* 30Y 紫線（虛線段） */}
+                                {segments30y.map((pts, i) => (
+                                  <polyline key={`30y-${i}`} points={pts} fill="none" stroke="#a855f7" strokeWidth="1.5" strokeDasharray="4,2" />
+                                ))}
+
+                                {/* 10Y 藍線 */}
+                                {segments10y.map((pts, i) => (
+                                  <polyline key={`10y-${i}`} points={pts} fill="none" stroke="#3b82f6" strokeWidth="2.5" />
+                                ))}
+
+                                {/* 2Y 橘線 */}
+                                {segments2y.map((pts, i) => (
+                                  <polyline key={`2y-${i}`} points={pts} fill="none" stroke="#f97316" strokeWidth="1.5" />
+                                ))}
                                 
                                 {last2y && (
                                   <g>
@@ -951,14 +997,10 @@ export default function MarketSentiment() {
                <AlertCircle className="w-8 h-8 text-rose-500/50" />
                <span className="text-text-dim text-sm font-medium">⚠️ {yieldsError}</span>
                <button 
-                 onClick={() => {
-                   // Inside useEffect we don't have a direct handle, but we can trigger a re-fetch if we expose it or use a key
-                   // For simplicity in this component, let's just reload the page or use a state trigger
-                   window.location.reload(); 
-                 }} 
+                 onClick={fetchYields} 
                  className="text-brand text-xs font-bold uppercase tracking-widest hover:underline bg-brand/5 px-4 py-2 rounded-lg border border-brand/20"
                >
-                 重新整理頁面
+                 重新取得數據
                </button>
             </div>
           ) : (
@@ -1394,6 +1436,110 @@ export default function MarketSentiment() {
                         </div>
                       </div>
 
+                      {/* FCF 監控 - 科技巨頭自由現金流健康度 */}
+                      {sd.aiCapex.fcf && (
+                        <div className="my-4 border-t border-border-subtle/30 pt-4">
+                          <div className="flex items-center justify-between mb-2">
+                            <span className="text-[9px] font-mono text-text-bright uppercase tracking-wider font-semibold">
+                              Hyperscaler FCF Health（7 巨頭自由現金流）
+                            </span>
+                            <div className="flex items-center gap-2">
+                              {sd.aiCapex.fcf.avgFcfYield !== null && (
+                                <span className="text-[9px] font-mono text-text-dim">
+                                  均 FCF Yield: <span className={`font-bold ${
+                                    sd.aiCapex.fcf.avgFcfYield > 3.5 ? 'text-emerald-400' :
+                                    sd.aiCapex.fcf.avgFcfYield > 1.5 ? 'text-amber-400' : 'text-rose-400'
+                                  }`}>{sd.aiCapex.fcf.avgFcfYield.toFixed(1)}%</span>
+                                </span>
+                              )}
+                              <SignalLamp
+                                status={sd.aiCapex.fcf.compositeSignal}
+                                label={
+                                  sd.aiCapex.fcf.compositeSignal === 'red' ? '造血能力惡化' :
+                                  sd.aiCapex.fcf.compositeSignal === 'yellow' ? 'Capex 侵蝕 FCF' : 'FCF 健全'
+                                }
+                              />
+                            </div>
+                          </div>
+
+                          {/* 7 巨頭橫向格子（手機 2x4 或 4 行，桌機 7 列） */}
+                          <div className="grid grid-cols-4 lg:grid-cols-7 gap-1.5">
+                            {sd.aiCapex.fcf.stocks.map((stock: any) => {
+                              const dotColor = stock.signal === 'red' ? 'bg-rose-500' :
+                                stock.signal === 'yellow' ? 'bg-amber-400' : 'bg-emerald-400';
+                              const textColor = stock.signal === 'red' ? 'text-rose-400' :
+                                stock.signal === 'yellow' ? 'text-amber-400' : 'text-emerald-400';
+                              const borderColor = stock.signal === 'red' ? 'border-rose-500/30' :
+                                stock.signal === 'yellow' ? 'border-amber-400/30' : 'border-emerald-400/20';
+                              return (
+                                <div key={stock.symbol}
+                                  title={`${stock.symbol}（${stock.name}）`}
+                                  className={`p-2 rounded-lg bg-card-bg/20 border ${borderColor} flex flex-col items-center gap-1`}>
+                                  <div className={`w-2 h-2 rounded-full ${dotColor} ${stock.signal === 'red' ? 'animate-pulse' : ''}`} />
+                                  <span className="text-[9px] font-mono font-bold text-text-dim">{stock.symbol}</span>
+                                  <span className={`text-[10px] font-mono font-bold ${textColor}`}>
+                                    {stock.fcfYield !== null ? `${stock.fcfYield.toFixed(1)}%` : '--'}
+                                  </span>
+                                  <span className="text-[8px] text-text-dim/40 font-mono">FCF Yield</span>
+                                </div>
+                              );
+                            })}
+                          </div>
+
+                          {/* 最嚴重的個股展開（如果有紅燈，展示詳細資訊） */}
+                          {sd.aiCapex.fcf.redCount > 0 && (
+                            <div className="mt-2 p-2.5 rounded-lg bg-rose-500/5 border border-rose-500/20">
+                              <div className="text-[9px] text-rose-400 font-mono font-bold mb-1.5">
+                                ⚠️ {sd.aiCapex.fcf.redCount}/{sd.aiCapex.fcf.stocks.length} 家巨頭 FCF 健康亮紅燈
+                              </div>
+                              <div className="space-y-1">
+                                {sd.aiCapex.fcf.stocks
+                                  .filter((s: any) => s.signal === 'red')
+                                  .map((s: any) => (
+                                    <div key={s.symbol} className="grid grid-cols-4 gap-1 text-[9px] font-mono">
+                                      <span className="text-rose-400 font-bold">{s.symbol}</span>
+                                      <span className="text-text-dim">
+                                        Yield {s.fcfYield !== null ? `${s.fcfYield.toFixed(1)}%` : '--'}
+                                      </span>
+                                      <span className="text-text-dim">
+                                        Capex {s.capexRatio !== null ? `${s.capexRatio.toFixed(0)}%↑` : '--'}
+                                      </span>
+                                      {s.fcfMargin !== null && (
+                                        <span className={s.fcfMargin < 10 ? 'text-rose-400' : 'text-text-dim'}>
+                                          Margin {s.fcfMargin.toFixed(1)}%
+                                        </span>
+                                      )}
+                                    </div>
+                                  ))
+                                }
+                              </div>
+                            </div>
+                          )}
+
+                          {/* 燈號門檻說明 */}
+                          <div className="mt-2 flex flex-wrap gap-x-3 gap-y-0.5">
+                            {[
+                              { label: 'FCF Yield', green: '>3.5%', yellow: '1.5-3.5%', red: '<1.5%' },
+                              { label: 'Capex/OCF', green: '<40%', yellow: '40-65%', red: '>65%' },
+                              { label: 'FCF Margin', green: '>20%', yellow: '10-20%', red: '<10%' },
+                            ].map(t => (
+                              <div key={t.label} className="flex items-center gap-1 text-[8px] font-mono text-text-dim/40">
+                                <span>{t.label}:</span>
+                                <span className="text-emerald-400/50">{t.green}</span>
+                                <span className="text-amber-400/50">{t.yellow}</span>
+                                <span className="text-rose-400/50">{t.red}</span>
+                              </div>
+                            ))}
+                            <div className="text-[8px] font-mono text-text-dim/30 ml-auto">
+                              {sd.aiCapex.fcf.isLive ? '● Yahoo Finance Live' : '● Fallback 估算'}
+                            </div>
+                            <div className="text-[8.5px] text-text-dim/25 font-mono mt-1 w-full leading-normal">
+                              ※ AAPL FCF Yield 受高市值影響偏低屬正常，ORCL 以 Capex/OCF 為主要參考指標
+                            </div>
+                          </div>
+                        </div>
+                      )}
+
                       <div className="space-y-3 text-xs font-sans text-text-dim">
                         <div className="bg-card-bg/25 p-3 rounded-lg border border-border-subtle/30">
                           <div className="flex items-center gap-1.5 text-orange-400 font-bold mb-1">
@@ -1401,7 +1547,17 @@ export default function MarketSentiment() {
                             <span>雪崩觸發點</span>
                           </div>
                           <p className="leading-relaxed text-[11px]">
-                            2026年中，Hyperscalers（微軟、Google、AWS、Meta）的雲端 AI 基礎建設投入數千億美元，若在消費端或企業端遲遲無法轉化為實質利潤，「AI ROI 證偽」將引發嚴重的 Capex 砍單潮。
+                            {`2026年中，全球 AI 基建投入主力（微軟、Google、Amazon、Meta、Oracle 雲端擴張）以及消費端 AI 試金石（Apple Intelligence）若無法在財報中展現 ROI，將引發市場對科技股的系統性重新定價。`}
+                            {sd.aiCapex.fcf?.avgCapexRatio != null && (
+                              <span className={`block mt-1 text-[10px] font-mono font-bold ${
+                                (sd.aiCapex.fcf.avgCapexRatio ?? 0) > 65 ? 'text-rose-400' :
+                                (sd.aiCapex.fcf.avgCapexRatio ?? 0) > 40 ? 'text-amber-400' : 'text-emerald-400'
+                              }`}>
+                                ⚡ 當前 {sd.aiCapex.fcf.stocks.length} 巨頭平均 Capex/OCF 比率：{sd.aiCapex.fcf.avgCapexRatio.toFixed(1)}%
+                                {(sd.aiCapex.fcf.avgCapexRatio ?? 0) > 65 ? '（已超危險線 65%）' :
+                                 (sd.aiCapex.fcf.avgCapexRatio ?? 0) > 40 ? '（接近警戒線 65%）' : '（尚在安全範圍）'}
+                              </span>
+                            )}
                           </p>
                         </div>
                         <div className="bg-card-bg/25 p-3 rounded-lg border border-border-subtle/30">
@@ -1421,7 +1577,14 @@ export default function MarketSentiment() {
                         <span>關鍵監控指標</span>
                       </div>
                       <div className="flex flex-wrap gap-1.5">
-                        {["Hyperscaler 財報 Capex 指引", "AI 企業採用率", "NVDA 毛利率趨勢", "雲端收入 YoY"].map(tag => (
+                        {[
+                          "Hyperscaler FCF Yield",
+                          "Capex / 營業現金流比",
+                          "FCF YoY 成長率",
+                          "AI 企業採用率",
+                          "NVDA 毛利率趨勢",
+                          "雲端收入 YoY"
+                        ].map(tag => (
                           <span key={tag} className="text-[9px] px-2 py-0.5 rounded-full bg-white/5 border border-white/10 text-text-dim font-mono">
                             {tag}
                           </span>

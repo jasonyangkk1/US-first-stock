@@ -418,41 +418,88 @@ async function startServer() {
     const FRED_API_KEY = process.env.FRED_API_KEY;
     const FRED_BASE_URL = 'https://api.stlouisfed.org/fred/series/observations';
 
+    const FALLBACK_DATA = {
+      yield2y: 3.85,
+      yield10y: 4.28,
+      yield30y: 4.65,
+      spread_2_10: 0.43,
+      spread_2_30: 0.8,
+      curveSignal: 'normal',
+      stockOutlook: '（使用備援數據，請稍後重試）',
+      outlookType: 'neutral',
+      date: new Date().toISOString().split('T')[0],
+      lastUpdated: new Date().toISOString(),
+      absoluteLevel: 'high',
+      absoluteLevelNote: '10年期殖利率偏高，壓縮股票本益比，成長股面臨估值修正壓力',
+      pressureOnEquity: 'high',
+      pressureNote: '高殖利率環境壓縮股票風險溢價，特別對高本益比科技股不利',
+      keyRisks: ['⚠️ 數據暫時無法由美聯儲取得', '10年期殖利率處於偏高水位，本益比面臨潛在折價風險'],
+      keyOpportunities: ['配置長期債券鎖定收益'],
+      analystTake: '當前 FRED API 因網路或請求限制暫時無法取得最新數據。顯示為上次已知或合理市場預估。此時 2-10 債券利差大約維持在小幅走平至正常水位，債券對股市利差優勢仍強。',
+      warningFlags: ['⚠️ 數據載入中，顯示為估算值'],
+      percentile20y: 50,
+      percentileNote: '當前 10Y 殖利率處於前 20 年的歷史中位水位附近。',
+      historicalContexts: [],
+      chartData: { dates: [], yield2y: [], yield10y: [], yield30y: [] },
+      isFallback: true
+    };
+
     if (!FRED_API_KEY) {
       return res.json({ error: 'FRED_API_KEY_MISSING' });
     }
 
-    const fetchFredSeries = async (seriesId: string) => {
-      try {
-        const url = `${FRED_BASE_URL}?series_id=${seriesId}&api_key=${FRED_API_KEY}&file_type=json&sort_order=desc&limit=10`;
-        const response = await fetch(url, { signal: AbortSignal.timeout(8000) });
-        if (!response.ok) return null;
-        const data: any = await response.json();
-        const valid = (data.observations || [])
-          .filter((o: any) => o.value !== '.')
-          .map((o: any) => ({ value: Number(o.value), date: o.date }));
-        return valid.length > 0 ? valid[0] : null;
-      } catch (e) {
-        console.error(`[yields] Fetch failed for ${seriesId}:`, e);
-        return null;
+    const fetchFredSeries = async (seriesId: string, retries = 2): Promise<{ value: number; date: string } | null> => {
+      for (let attempt = 0; attempt <= retries; attempt++) {
+        try {
+          const url = `${FRED_BASE_URL}?series_id=${seriesId}&api_key=${FRED_API_KEY}&file_type=json&sort_order=desc&limit=10`;
+          const response = await fetch(url, { signal: AbortSignal.timeout(6000) });
+          
+          if (response.status === 429) {
+            console.warn(`[yields (server)] Rate limited for ${seriesId}, attempt ${attempt + 1}`);
+            if (attempt < retries) {
+              await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
+              continue;
+            }
+            return null;
+          }
+          
+          if (!response.ok) return null;
+          
+          const data: any = await response.json();
+          const valid = (data.observations || [])
+            .filter((o: any) => o.value !== '.')
+            .map((o: any) => ({ value: Number(o.value), date: o.date }));
+          return valid.length > 0 ? valid[0] : null;
+        } catch (e) {
+          console.error(`[yields (server)] Fetch failed for ${seriesId} (attempt ${attempt + 1}):`, e);
+          if (attempt < retries) {
+            await new Promise(r => setTimeout(r, 500 * (attempt + 1)));
+            continue;
+          }
+          return null;
+        }
       }
+      return null;
     };
 
-    async function fetchFredHistory(seriesId: string, monthsBack: number) {
+    async function fetchFredHistory(seriesId: string, monthsBack: number, frequency: 'm' | 'd' = 'm') {
       if (!FRED_API_KEY) return [];
       try {
         const startDate = new Date();
         startDate.setMonth(startDate.getMonth() - monthsBack);
         const observationStart = startDate.toISOString().split('T')[0];
-        const url = `${FRED_BASE_URL}?series_id=${seriesId}&api_key=${FRED_API_KEY}&file_type=json&sort_order=asc&observation_start=${observationStart}`;
-        const res = await fetch(url);
-        if (!res.ok) return [];
-        const data: any = await res.json();
-        const daily = (data.observations || [])
+        
+        // Use frequency=m parameter to fetch monthly end-of-period records to reduce footprint
+        const url = `${FRED_BASE_URL}?series_id=${seriesId}&api_key=${FRED_API_KEY}&file_type=json&sort_order=asc&observation_start=${observationStart}&frequency=${frequency}&aggregation_method=eop`;
+        const response = await fetch(url, { signal: AbortSignal.timeout(8000) });
+        if (!response.ok) return [];
+        const data: any = await response.json();
+        const monthly = (data.observations || [])
           .filter((o: any) => o.value !== '.')
           .map((o: any) => ({ value: Number(o.value), date: o.date }));
-        return sampleMonthlyLast(daily);
+        return monthly;
       } catch (e) {
+        console.error(`[yields (server)] History fetch failed for ${seriesId}:`, e);
         return [];
       }
     }
@@ -468,22 +515,30 @@ async function startServer() {
       data10y: Array<{ value: number; date: string }>,
       data30y: Array<{ value: number; date: string }>
     ) {
-      const lookup2y = Object.fromEntries(data2y.map(d => [d.date.slice(0, 7), d.value]));
-      const lookup30y = Object.fromEntries(data30y.map(d => [d.date.slice(0, 7), d.value]));
-      
-      const result = data10y.map(d => {
-        const monthKey = d.date.slice(0, 7);
-        return {
-          date: monthKey,
-          yield2y: lookup2y[monthKey] ?? null,
-          yield10y: d.value,
-          yield30y: lookup30y[monthKey] ?? null,
-        };
-      });
-      
+      // 建立各自的 YYYY-MM → value lookup
+      const lookup2y  = new Map(data2y.map(d  => [d.date.slice(0, 7), d.value]));
+      const lookup10y = new Map(data10y.map(d => [d.date.slice(0, 7), d.value]));
+      const lookup30y = new Map(data30y.map(d => [d.date.slice(0, 7), d.value]));
+
+      // 取三方月份聯集，排序
+      const allMonths = Array.from(
+        new Set([
+          ...data2y.map(d  => d.date.slice(0, 7)),
+          ...data10y.map(d => d.date.slice(0, 7)),
+          ...data30y.map(d => d.date.slice(0, 7)),
+        ])
+      ).sort();  // "YYYY-MM" 字串排序即正確時間順序
+
+      const result = allMonths.map(month => ({
+        date:     month,
+        yield2y:  lookup2y.get(month)  ?? null,
+        yield10y: lookup10y.get(month) ?? null,
+        yield30y: lookup30y.get(month) ?? null,
+      }));
+
       return {
-        dates: result.map(r => r.date),
-        yield2y: result.map(r => r.yield2y),
+        dates:    result.map(r => r.date),
+        yield2y:  result.map(r => r.yield2y),
         yield10y: result.map(r => r.yield10y),
         yield30y: result.map(r => r.yield30y),
       };
@@ -665,19 +720,34 @@ async function startServer() {
     }
 
     try {
-      const [y2, y10, y30, history20y, chart2y, chart10y, chart30y] = await Promise.all([
+      // === Layer 1: Core yields data (DGS2, DGS10, DGS30) - Must succeed, use retrying fetch ===
+      const [y2, y10, y30] = await Promise.all([
         fetchFredSeries('DGS2'),
         fetchFredSeries('DGS10'),
         fetchFredSeries('DGS30'),
-        fetchFredHistory('DGS10', 240),
-        fetchFredHistory('DGS2', 24),
-        fetchFredHistory('DGS10', 24),
-        fetchFredHistory('DGS30', 24)
       ]);
 
       if (!y2 || !y10) {
-        return res.json({ error: 'DATA_UNAVAILABLE', yield2y: null, yield10y: null });
+        console.warn('[yields (server)] Core FRED yields unavailable, returning fallback data');
+        return res.json({
+          ...FALLBACK_DATA,
+          isFallback: true,
+          error: null
+        });
       }
+
+      // === Layer 2: Historical datasets - Failsafe fetching with Promise.allSettled ===
+      const [histResult, chart2yResult, chart10yResult, chart30yResult] = await Promise.allSettled([
+        fetchFredHistory('DGS10', 240, 'm'),
+        fetchFredHistory('DGS2', 24, 'm'),
+        fetchFredHistory('DGS10', 24, 'm'),
+        fetchFredHistory('DGS30', 24, 'm')
+      ]);
+
+      const history20y = histResult.status === 'fulfilled' ? histResult.value : [];
+      const chart2y    = chart2yResult.status === 'fulfilled' ? chart2yResult.value : [];
+      const chart10y   = chart10yResult.status === 'fulfilled' ? chart10yResult.value : [];
+      const chart30y   = chart30yResult.status === 'fulfilled' ? chart30yResult.value : [];
 
       const spread_2_10 = y10.value - y2.value;
       const spread_2_30 = y30 ? y30.value - y2.value : null;
@@ -710,26 +780,37 @@ async function startServer() {
       const percentile20y = calculatePercentile(history20y, y10.value);
       const percentileNote = `當前 10Y 殖利率高於過去 20 年中 ${percentile20y}% 的時間，處於歷史${percentile20y > 80 ? '極高' : percentile20y > 60 ? '偏高' : percentile20y > 40 ? '中位' : '偏低'}水位`;
 
-      const mergedCharts = mergeChartData(chart2y, chart10y, chart30y);
+       const mergedCharts = mergeChartData(chart2y, chart10y, chart30y);
 
-      // Align chart last point with live data
-      if (y10 && mergedCharts.yield10y.length > 0) {
-        const lastIdx = mergedCharts.yield10y.length - 1;
-        const chartLast10y = mergedCharts.yield10y[lastIdx];
-        if (chartLast10y && Math.abs(chartLast10y - y10.value) > 0.01) {
-          const todayMonthMonth = y10.date.slice(0, 7);
-          if (todayMonthMonth !== mergedCharts.dates[lastIdx]) {
-            mergedCharts.dates.push(todayMonthMonth);
-            mergedCharts.yield2y.push(y2?.value ?? null);
-            mergedCharts.yield10y.push(y10.value);
-            mergedCharts.yield30y.push(y30?.value ?? null);
-          } else {
-            mergedCharts.yield10y[lastIdx] = y10.value;
-            if (y2) mergedCharts.yield2y[lastIdx] = y2.value;
-            if (y30) mergedCharts.yield30y[lastIdx] = y30.value;
-          }
-        }
-      }
+       // Debug log（生產環境可移除）
+       console.log('[yields (server)] Chart data points:', {
+         dates:    mergedCharts.dates.length,
+         yield2y:  mergedCharts.yield2y.filter(v => v !== null).length,
+         yield10y: mergedCharts.yield10y.filter(v => v !== null).length,
+         yield30y: mergedCharts.yield30y.filter(v => v !== null).length,
+         sample2y:  mergedCharts.yield2y.slice(-3),
+         sample30y: mergedCharts.yield30y.slice(-3),
+       });
+
+       // Align chart last point with live data
+       if (y10 && mergedCharts.dates.length > 0) {
+         const todayMonth = y10.date.slice(0, 7);
+         const lastChartMonth = mergedCharts.dates[mergedCharts.dates.length - 1];
+
+         if (todayMonth !== lastChartMonth) {
+           // 新月份：追加一筆
+           mergedCharts.dates.push(todayMonth);
+           mergedCharts.yield2y.push(y2?.value  ?? null);
+           mergedCharts.yield10y.push(y10.value);
+           mergedCharts.yield30y.push(y30?.value ?? null);
+         } else {
+           // 同月份：更新最後一筆（三條線都更新）
+           const lastIdx = mergedCharts.dates.length - 1;
+           mergedCharts.yield2y[lastIdx]  = y2?.value  ?? mergedCharts.yield2y[lastIdx];
+           mergedCharts.yield10y[lastIdx] = y10.value;
+           mergedCharts.yield30y[lastIdx] = y30?.value ?? mergedCharts.yield30y[lastIdx];
+         }
+       }
 
       const results = {
         yield2y: y2.value,
@@ -758,13 +839,19 @@ async function startServer() {
           y30 ? y30.value : null,
           spread_2_10
         ),
-        chartData: mergedCharts
+        chartData: mergedCharts,
+        isFallback: false
       };
 
       cache.set(cacheKey, results, 600);
       res.json(results);
     } catch (err) {
-      res.json({ error: 'INTERNAL_ERROR' });
+      console.error('[yields (server)] Handler error:', err);
+      res.json({
+        ...FALLBACK_DATA,
+        isFallback: true,
+        error: null
+      });
     }
   });
 
@@ -1402,8 +1489,40 @@ async function startServer() {
   });
 
   // 10. Structural Systemic Risk Radar API (FRED + Fallback)
-  let structuralCache: { data: any; ts: number } | null = null;
-  const STRUCTURAL_CACHE_TTL = 3600000; // 1-hour cache
+  let structuralCache: { data: any; ts: number; ttl: number } | null = null;
+  const CACHE_TTL_SUCCESS = 4 * 60 * 60 * 1000;  // 4 hours (FCF is stable)
+  const CACHE_TTL_PARTIAL = 30 * 60 * 1000;       // 30 minutes (OAS ok but FCF failed)
+  const CACHE_TTL_FAIL    = 5 * 60 * 1000;        // 5 minutes (totally failed, quick retry)
+
+  const HYPERSCALERS = [
+    { symbol: 'MSFT', name: '微軟' },
+    { symbol: 'GOOGL', name: 'Alphabet' },
+    { symbol: 'AMZN', name: '亞馬遜' },
+    { symbol: 'META', name: 'Meta' },
+    { symbol: 'NVDA', name: 'NVIDIA' },
+    { symbol: 'ORCL', name: 'Oracle' },
+    { symbol: 'AAPL', name: 'Apple' },
+  ];
+
+  interface HyperscalerFCFData {
+    symbol: string;
+    name: string;
+    fcfYield: number | null;       // FCF / 市值 (%)
+    capexRatio: number | null;     // Capex / 營業現金流 (%)
+    fcfGrowthYoY: number | null;   // FCF YoY 成長率 (%)
+    fcfMargin: number | null;      // FCF / 營收 (%)
+    fcfTTM: number | null;         // 近12個月自由現金流（億美元）
+    capexTTM: number | null;       // 近12個月資本支出（億美元）
+    marketCap: number | null;      // 市值（億美元）
+    signal: 'green' | 'yellow' | 'red';
+  }
+
+  function getFloatValue(val: any): number | null {
+    if (val === undefined || val === null) return null;
+    if (typeof val === 'number') return val;
+    if (typeof val === 'object' && 'raw' in val) return typeof val.raw === 'number' ? val.raw : null;
+    return null;
+  }
 
   function generateFallbackHistory(startVal: number, endVal: number, noiseFactor: number) {
     const history: Array<{ date: string; value: number }> = [];
@@ -1433,6 +1552,27 @@ async function startServer() {
     return history;
   }
 
+  const fallbackFcf = {
+    stocks: HYPERSCALERS.map(h => ({
+      symbol: h.symbol,
+      name: h.name,
+      fcfYield: null,
+      capexRatio: null,
+      fcfGrowthYoY: null,
+      fcfMargin: null,
+      fcfTTM: null,
+      capexTTM: null,
+      marketCap: null,
+      signal: 'yellow' as const,
+    })),
+    compositeSignal: 'yellow' as const,
+    avgFcfYield: null,
+    avgCapexRatio: null,
+    redCount: 0,
+    yellowCount: 5,
+    isLive: false,
+  };
+
   const structuralFallbackData = {
     aiCapex: {
       hyOas: 310, // bps
@@ -1441,6 +1581,7 @@ async function startServer() {
       signal: 'yellow' as const,
       signalLabel: '利差擴大警戒',
       isLive: false,
+      fcf: fallbackFcf,
     },
     geopolitical: {
       wtiPrice: 78.5,
@@ -1473,6 +1614,177 @@ async function startServer() {
     updatedAt: new Date().toISOString(),
     dataSource: 'fallback' as const,
   };
+
+  function nullStock(symbol: string, name: string): HyperscalerFCFData {
+    return {
+      symbol, name,
+      fcfYield: null, capexRatio: null, fcfGrowthYoY: null, fcfMargin: null,
+      fcfTTM: null, capexTTM: null, marketCap: null,
+      signal: 'yellow' as const,
+    };
+  }
+
+  function getFallbackFCF(reason: string) {
+    console.warn(`[structural-dev] FCF fallback due to: ${reason}`);
+    return {
+      stocks: HYPERSCALERS.map(h => nullStock(h.symbol, h.name)),
+      compositeSignal: 'yellow' as const,
+      avgFcfYield: null,
+      avgCapexRatio: null,
+      redCount: 0,
+      yellowCount: 3,
+      isLive: false,
+    };
+  }
+
+  async function fetchHyperscalerFCF(): Promise<{
+    stocks: HyperscalerFCFData[];
+    compositeSignal: 'green' | 'yellow' | 'red';
+    avgFcfYield: number | null;
+    avgCapexRatio: number | null;
+    redCount: number;
+    yellowCount: number;
+    isLive: boolean;
+  }> {
+    try {
+      const results = await Promise.all(
+        HYPERSCALERS.map(async ({ symbol, name }) => {
+          try {
+            let summary: any = null;
+            try {
+              summary = await yahooFinance.quoteSummary(symbol, {
+                modules: ['financialData', 'defaultKeyStatistics']
+              }, {
+                validateResult: false
+              } as any);
+            } catch (err: any) {
+              if (err?.result) {
+                summary = err.result;
+                console.warn(`[structural-dev] ${symbol} quoteSummary schema error, using partial result`);
+              } else {
+                console.error(`[structural-dev] ${symbol} quoteSummary failed:`, err?.message?.substring(0, 100));
+                return nullStock(symbol, name);
+              }
+            }
+
+            if (!summary) return nullStock(symbol, name);
+
+            const fd = summary.financialData;
+            const ks = summary.defaultKeyStatistics;
+
+            console.log(`[structural-dev] ${symbol} raw:`, {
+              freeCashflow: fd?.freeCashflow,
+              operatingCashflow: fd?.operatingCashflow,
+              totalRevenue: fd?.totalRevenue,
+              marketCap: ks?.marketCap,
+            });
+
+            const fcfTTM = getFloatValue(fd?.freeCashflow);
+            const operatingCashflow = getFloatValue(fd?.operatingCashflow);
+            const revenueTTM = getFloatValue(fd?.totalRevenue);
+            const marketCapRaw = getFloatValue(ks?.marketCap);
+
+            // Capex TTM = OCF - FCF
+            let capexTTM: number | null = null;
+            if (operatingCashflow !== null && fcfTTM !== null) {
+              capexTTM = operatingCashflow - fcfTTM;
+              if (capexTTM < 0) capexTTM = null;
+            }
+
+            const fcfGrowthYoY: number | null = null;
+
+            const fcfYield = (fcfTTM !== null && marketCapRaw !== null && marketCapRaw > 0)
+              ? (fcfTTM / marketCapRaw) * 100
+              : null;
+
+            const capexRatio = (capexTTM !== null && operatingCashflow !== null && operatingCashflow > 0)
+              ? (capexTTM / operatingCashflow) * 100
+              : null;
+
+            const fcfMargin = (fcfTTM !== null && revenueTTM !== null && revenueTTM > 0)
+              ? (fcfTTM / revenueTTM) * 100
+              : null;
+
+            // 燈號判斷
+            let redFlags = 0;
+            let yellowFlags = 0;
+
+            if (fcfYield !== null) {
+              if (fcfYield < 1.5) redFlags++;
+              else if (fcfYield < 3.5) yellowFlags++;
+            }
+            if (capexRatio !== null) {
+              if (capexRatio > 65) redFlags++;
+              else if (capexRatio > 40) yellowFlags++;
+            }
+            if (fcfMargin !== null) {
+              if (fcfMargin < 10) redFlags++;
+              else if (fcfMargin < 20) yellowFlags++;
+            }
+
+            const hasData = fcfYield !== null || capexRatio !== null;
+            const signal: 'green' | 'yellow' | 'red' = !hasData ? 'yellow' :
+              redFlags >= 2 ? 'red' :
+              redFlags >= 1 || yellowFlags >= 2 ? 'yellow' :
+              'green';
+
+            return {
+              symbol,
+              name,
+              fcfYield: fcfYield !== null ? Number(fcfYield.toFixed(2)) : null,
+              capexRatio: capexRatio !== null ? Number(capexRatio.toFixed(1)) : null,
+              fcfGrowthYoY,
+              fcfMargin: fcfMargin !== null ? Number(fcfMargin.toFixed(1)) : null,
+              fcfTTM: fcfTTM !== null ? Number((fcfTTM / 1e9).toFixed(1)) : null,
+              capexTTM: capexTTM !== null ? Number((capexTTM / 1e9).toFixed(1)) : null,
+              marketCap: marketCapRaw !== null ? Number((marketCapRaw / 1e9).toFixed(0)) : null,
+              signal,
+            } as HyperscalerFCFData;
+
+          } catch (err) {
+            console.error(`[structural-dev] FCF fetch error for ${symbol}:`, err);
+            return nullStock(symbol, name);
+          }
+        })
+      );
+
+      const validStocks = results.filter(s => s.fcfYield !== null);
+      const avgFcfYield = validStocks.length > 0
+        ? Number((validStocks.reduce((sum, r) => sum + (r.fcfYield ?? 0), 0) / validStocks.length).toFixed(2))
+        : null;
+      const avgCapexRatio = results.filter(s => s.capexRatio !== null).length > 0
+        ? Number((results.filter(s => s.capexRatio !== null).reduce((sum, r) => sum + (r.capexRatio ?? 0), 0) / results.filter(s => s.capexRatio !== null).length).toFixed(1))
+        : null;
+      const redCount = results.filter(r => r.signal === 'red').length;
+      const yellowCount = results.filter(r => r.signal === 'yellow').length;
+
+      const compositeSignal: 'green' | 'yellow' | 'red' =
+        redCount >= 2 ? 'red' :
+        redCount >= 1 || yellowCount >= 3 ? 'yellow' :
+        'green';
+
+      console.log('[structural-dev] Hyperscaler FCF results:', {
+        success: validStocks.length,
+        total: HYPERSCALERS.length,
+        redCount,
+        yellowCount
+      });
+
+      return {
+        stocks: results,
+        compositeSignal,
+        avgFcfYield,
+        avgCapexRatio,
+        redCount,
+        yellowCount,
+        isLive: validStocks.length > 0,
+      };
+
+    } catch (err) {
+      console.error('[structural-dev] fetchHyperscalerFCF error:', err);
+      return getFallbackFCF('outer-error');
+    }
+  }
 
   async function fetchFredSeries(seriesId: string, limit = 100): Promise<Array<{ date: string; value: number }> | null> {
     const FRED_API_KEY = process.env.FRED_API_KEY;
@@ -1514,16 +1826,66 @@ async function startServer() {
   }
 
   app.get('/api/structural', async (req, res) => {
-    if (structuralCache && Date.now() - structuralCache.ts < STRUCTURAL_CACHE_TTL) {
+    // GET /api/structural?debug=1 → 回傳診斷資訊，不受 cache 影響
+    if (req.query?.debug === '1') {
+      const testSymbol = 'MSFT';
+      let debugInfo: any = { symbol: testSymbol, timestamp: new Date().toISOString() };
+      try {
+        const testSummary = await yahooFinance.quoteSummary(testSymbol, {
+          modules: ['financialData', 'defaultKeyStatistics']
+        }, {
+          validateResult: false
+        } as any);
+        debugInfo.quoteSummarySuccess = true;
+        debugInfo.freeCashflow = testSummary.financialData?.freeCashflow;
+        debugInfo.operatingCashflow = testSummary.financialData?.operatingCashflow;
+        debugInfo.marketCap = testSummary.defaultKeyStatistics?.marketCap;
+      } catch (e: any) {
+        debugInfo.quoteSummarySuccess = false;
+        debugInfo.error = e.message?.substring(0, 200);
+        debugInfo.hasResult = !!e.result;
+        if (e.result) {
+          debugInfo.resultKeys = Object.keys(e.result);
+          debugInfo.freeCashflow = e.result.financialData?.freeCashflow;
+        }
+      }
+      return res.json(debugInfo);
+    }
+
+    // Try cache with dynamic TTL
+    if (structuralCache && Date.now() - structuralCache.ts < (structuralCache.ttl ?? CACHE_TTL_SUCCESS)) {
       return res.json(structuralCache.data);
     }
 
     const FRED_API_KEY = process.env.FRED_API_KEY;
     if (!FRED_API_KEY) {
-      return res.json(structuralFallbackData);
+      try {
+        const fcfData = await fetchHyperscalerFCF();
+        const oasSignal = structuralFallbackData.aiCapex.signal;
+        const compositeSignal = [oasSignal, fcfData.compositeSignal].includes('red') ? 'red' :
+                                [oasSignal, fcfData.compositeSignal].includes('yellow') ? 'yellow' : 'green';
+        const signalLabel = compositeSignal === 'green' ? '信用利差與巨頭造血健全' : compositeSignal === 'yellow' ? '利差警示/或 Capex 侵蝕 FCF' : '信用危險或 FCF 嚴重惡化';
+        
+        const copyFallback = JSON.parse(JSON.stringify(structuralFallbackData));
+        copyFallback.aiCapex.fcf = fcfData;
+        copyFallback.aiCapex.signal = compositeSignal;
+        copyFallback.aiCapex.signalLabel = signalLabel;
+        copyFallback.updatedAt = new Date().toISOString();
+        copyFallback.dataSource = 'mix' as any;
+
+        const fcfSuccess = fcfData.isLive && fcfData.stocks.some(s => s.fcfYield !== null);
+        const ttl = fcfSuccess ? CACHE_TTL_SUCCESS : CACHE_TTL_FAIL;
+        structuralCache = { data: copyFallback, ts: Date.now(), ttl };
+
+        return res.json(copyFallback);
+      } catch (err) {
+        console.error('[structural-dev] Failed FCF fetch in no FRED Key fallback:', err);
+        return res.json(structuralFallbackData);
+      }
     }
 
     try {
+      // 階段 1：FRED 數據（快，約 1-2 秒）
       const [
         oasRaw,
         wtiRaw,
@@ -1542,19 +1904,42 @@ async function startServer() {
         fetchFredSeries('IR')
       ]);
 
+      // 階段 2：Yahoo Finance FCF（獨立執行，不受 FRED timeout 影響）
+      // 給 FCF 獨立的 8 秒 deadline
+      const fcfData = await Promise.race([
+        fetchHyperscalerFCF(),
+        new Promise<ReturnType<typeof getFallbackFCF>>(resolve =>
+          setTimeout(() => resolve(getFallbackFCF('timeout')), 8000)
+        )
+      ]);
+
       let aiCapex: any = structuralFallbackData.aiCapex;
       if (oasRaw && oasRaw.length > 0) {
-        const hyOas = oasRaw[oasRaw.length - 1].value; // directly use the value, no multiplier
+        const hyOas = oasRaw[oasRaw.length - 1].value;
         const hyOasHistory = aggregateMonthly(oasRaw).map(o => ({ date: o.date, value: o.value }));
-        const signal = hyOas < 300 ? 'green' : hyOas <= 500 ? 'yellow' : 'red';
-        const signalLabel = signal === 'green' ? '信用利差正常' : signal === 'yellow' ? '利差擴大警戒' : '信用危險爆發';
+        const oasSignal = hyOas < 300 ? 'green' : hyOas <= 500 ? 'yellow' : 'red';
+        const signal = [oasSignal, fcfData.compositeSignal].includes('red') ? 'red' :
+                       [oasSignal, fcfData.compositeSignal].includes('yellow') ? 'yellow' : 'green';
+        const signalLabel = signal === 'green' ? '信用利差與巨頭造血健全' : signal === 'yellow' ? '利差警示/或 Capex 侵蝕 FCF' : '信用危險或 FCF 嚴重惡化';
 
         const monthlyHistory = aggregateMonthly(oasRaw);
         const prevMonthAvg = monthlyHistory.length >= 2
           ? Number(monthlyHistory[monthlyHistory.length - 2].value.toFixed(0))
           : null;
 
-        aiCapex = { hyOas, hyOasHistory, prevMonthAvg, signal, signalLabel, isLive: true };
+        aiCapex = { hyOas, hyOasHistory, prevMonthAvg, signal, signalLabel, isLive: true, fcf: fcfData };
+      } else {
+        const oasSignal = structuralFallbackData.aiCapex.signal;
+        const signal = [oasSignal, fcfData.compositeSignal].includes('red') ? 'red' :
+                       [oasSignal, fcfData.compositeSignal].includes('yellow') ? 'yellow' : 'green';
+        const signalLabel = signal === 'green' ? '信用利差與巨頭造血健全' : signal === 'yellow' ? '利差警示/或 Capex 侵蝕 FCF' : '信用危險或 FCF 嚴重惡化';
+        aiCapex = {
+          ...structuralFallbackData.aiCapex,
+          signal,
+          signalLabel,
+          isLive: true,
+          fcf: fcfData
+        };
       }
 
       let geopolitical: any = structuralFallbackData.geopolitical;
@@ -1624,7 +2009,14 @@ async function startServer() {
         dataSource: 'fred' as const,
       };
 
-      structuralCache = { data: liveData, ts: Date.now() };
+      const fcfSuccess = fcfData.isLive && fcfData.stocks.some(s => s.fcfYield !== null);
+      const fredSuccess = !!(oasRaw && oasRaw.length > 0);
+
+      const ttl = fcfSuccess && fredSuccess ? CACHE_TTL_SUCCESS :
+                  fredSuccess ? CACHE_TTL_PARTIAL :
+                  CACHE_TTL_FAIL;
+
+      structuralCache = { data: liveData, ts: Date.now(), ttl };
       return res.json(liveData);
 
     } catch (error) {

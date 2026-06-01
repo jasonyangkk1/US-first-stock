@@ -1,7 +1,10 @@
 
 import YahooFinance from 'yahoo-finance2';
 
-const instance = new YahooFinance({ suppressNotices: ['ripHistorical', 'yahooSurvey'] });
+const instance = new YahooFinance({ 
+  suppressNotices: ['ripHistorical', 'yahooSurvey'],
+  validation: { logErrors: false, logOptionsErrors: false }
+});
 
 export const yahooFinance = instance;
 

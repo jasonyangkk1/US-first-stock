@@ -41,10 +41,37 @@ interface YieldData {
     yield10y: (number | null)[];
     yield30y: (number | null)[];
   };
+  isFallback?: boolean;
 }
 
 let cache: { data: YieldData; ts: number } | null = null;
 const CACHE_TTL = 600_000; // 10 minutes
+
+const FALLBACK_DATA: YieldData = {
+  yield2y: 3.85,
+  yield10y: 4.28,
+  yield30y: 4.65,
+  spread_2_10: 0.43,
+  spread_2_30: 0.8,
+  curveSignal: 'normal',
+  stockOutlook: '（使用備援數據，請稍後重試）',
+  outlookType: 'neutral',
+  date: new Date().toISOString().split('T')[0],
+  lastUpdated: new Date().toISOString(),
+  absoluteLevel: 'high',
+  absoluteLevelNote: '10年期殖利率偏高，壓縮股票本益比，成長股面臨估值修正壓力',
+  pressureOnEquity: 'high',
+  pressureNote: '高殖利率環境壓縮股票風險溢價，特別對高本益比科技股不利',
+  keyRisks: ['⚠️ 數據暫時無法由美聯儲取得', '10年期殖利率處於偏高水位，本益比面臨潛在折價風險'],
+  keyOpportunities: ['配置長期債券鎖定收益'],
+  analystTake: '當前 FRED API 因網路或請求限制暫時無法取得最新數據。顯示為上次已知或合理市場預估。此時 2-10 債券利差大約維持在小幅走平至正常水位，債券對股市利差優勢仍強。',
+  warningFlags: ['⚠️ 數據載入中，顯示為估算值'],
+  percentile20y: 50,
+  percentileNote: '當前 10Y 殖利率處於前 20 年的歷史中位水位附近。',
+  historicalContexts: [],
+  chartData: { dates: [], yield2y: [], yield10y: [], yield30y: [] },
+  isFallback: true
+};
 
 function getHistoricalContext(
   yield2y: number,
@@ -158,22 +185,30 @@ function mergeChartData(
   data10y: Array<{ value: number; date: string }>,
   data30y: Array<{ value: number; date: string }>
 ) {
-  const lookup2y = Object.fromEntries(data2y.map(d => [d.date.slice(0, 7), d.value]));
-  const lookup30y = Object.fromEntries(data30y.map(d => [d.date.slice(0, 7), d.value]));
-  
-  const result = data10y.map(d => {
-    const monthKey = d.date.slice(0, 7);
-    return {
-      date: monthKey,
-      yield2y: lookup2y[monthKey] ?? null,
-      yield10y: d.value,
-      yield30y: lookup30y[monthKey] ?? null,
-    };
-  });
-  
+  // 建立各自的 YYYY-MM → value lookup
+  const lookup2y  = new Map(data2y.map(d  => [d.date.slice(0, 7), d.value]));
+  const lookup10y = new Map(data10y.map(d => [d.date.slice(0, 7), d.value]));
+  const lookup30y = new Map(data30y.map(d => [d.date.slice(0, 7), d.value]));
+
+  // 取三方月份聯集，排序
+  const allMonths = Array.from(
+    new Set([
+      ...data2y.map(d  => d.date.slice(0, 7)),
+      ...data10y.map(d => d.date.slice(0, 7)),
+      ...data30y.map(d => d.date.slice(0, 7)),
+    ])
+  ).sort();  // "YYYY-MM" 字串排序即正確時間順序
+
+  const result = allMonths.map(month => ({
+    date:     month,
+    yield2y:  lookup2y.get(month)  ?? null,
+    yield10y: lookup10y.get(month) ?? null,
+    yield30y: lookup30y.get(month) ?? null,
+  }));
+
   return {
-    dates: result.map(r => r.date),
-    yield2y: result.map(r => r.yield2y),
+    dates:    result.map(r => r.date),
+    yield2y:  result.map(r => r.yield2y),
     yield10y: result.map(r => r.yield10y),
     yield30y: result.map(r => r.yield30y),
   };
@@ -194,23 +229,27 @@ function sampleMonthlyLast(
   return Object.values(byMonth).sort((a, b) => a.date.localeCompare(b.date));
 }
 
-async function fetchFredHistory(seriesId: string, monthsBack: number): Promise<Array<{ value: number; date: string }>> {
+async function fetchFredHistory(
+  seriesId: string, 
+  monthsBack: number,
+  frequency: 'm' | 'd' = 'm'
+): Promise<Array<{ value: number; date: string }>> {
   if (!FRED_API_KEY) return [];
   try {
     const startDate = new Date();
     startDate.setMonth(startDate.getMonth() - monthsBack);
     const observationStart = startDate.toISOString().split('T')[0];
     
-    // Day frequency to get latest values correctly
-    const url = `${FRED_BASE_URL}?series_id=${seriesId}&api_key=${FRED_API_KEY}&file_type=json&sort_order=asc&observation_start=${observationStart}`;
-    const res = await fetch(url, { signal: AbortSignal.timeout(10000) });
+    // Add &frequency=m to drastically reduce payload size (240 monthly rows vs 5000+ daily rows)
+    const url = `${FRED_BASE_URL}?series_id=${seriesId}&api_key=${FRED_API_KEY}&file_type=json&sort_order=asc&observation_start=${observationStart}&frequency=${frequency}&aggregation_method=eop`;
+    const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
     if (!res.ok) return [];
     const data: any = await res.json();
-    const daily = (data.observations || [])
+    const monthly = (data.observations || [])
       .filter((o: any) => o.value !== '.')
       .map((o: any) => ({ value: Number(o.value), date: o.date }));
-      
-    return sampleMonthlyLast(daily);
+    
+    return monthly;
   } catch (e) {
     console.error(`[yields] History fetch failed for ${seriesId}:`, e);
     return [];
@@ -294,22 +333,42 @@ function getWarningFlags(yield2y: number, yield10y: number, yield30y: number | n
   return flags;
 }
 
-async function fetchFredSeries(seriesId: string): Promise<{ value: number; date: string } | null> {
+async function fetchFredSeries(seriesId: string, retries = 2): Promise<{ value: number; date: string } | null> {
   if (!FRED_API_KEY) return null;
-  try {
-    const url = `${FRED_BASE_URL}?series_id=${seriesId}&api_key=${FRED_API_KEY}&file_type=json&sort_order=desc&limit=10`;
-    const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
-    if (!res.ok) return null;
-    const data: any = await res.json();
-    const valid = (data.observations || [])
-      .filter((o: any) => o.value !== '.')
-      .map((o: any) => ({ value: Number(o.value), date: o.date }));
-    
-    return valid.length > 0 ? valid[0] : null;
-  } catch (e) {
-    console.error(`[yields] Fetch failed for ${seriesId}:`, e);
-    return null;
+  
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      const url = `${FRED_BASE_URL}?series_id=${seriesId}&api_key=${FRED_API_KEY}&file_type=json&sort_order=desc&limit=10`;
+      const res = await fetch(url, { signal: AbortSignal.timeout(6000) }); // Reduced timeout to 6 seconds
+      
+      if (res.status === 429) {
+        // Rate limit: backoff and retry
+        console.warn(`[yields] Rate limited for ${seriesId}, attempt ${attempt + 1}`);
+        if (attempt < retries) {
+          await new Promise(r => setTimeout(r, 1000 * (attempt + 1))); // 1s, 2s delay
+          continue;
+        }
+        return null;
+      }
+      
+      if (!res.ok) return null;
+      
+      const data: any = await res.json();
+      const valid = (data.observations || [])
+        .filter((o: any) => o.value !== '.')
+        .map((o: any) => ({ value: Number(o.value), date: o.date }));
+      
+      return valid.length > 0 ? valid[0] : null;
+    } catch (e) {
+      console.error(`[yields] Fetch failed for ${seriesId} (attempt ${attempt + 1}):`, e);
+      if (attempt < retries) {
+        await new Promise(r => setTimeout(r, 500 * (attempt + 1))); // 0.5s, 1s delay
+        continue;
+      }
+      return null;
+    }
   }
+  return null;
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -324,21 +383,34 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   try {
-    const [y2, y10, y30, history20y, chart2y, chart10y, chart30y] = await Promise.all([
+    // === Layer 1: Core yields data (DGS2, DGS10, DGS30) - Must succeed, use retrying fetch ===
+    const [y2, y10, y30] = await Promise.all([
       fetchFredSeries('DGS2'),
       fetchFredSeries('DGS10'),
       fetchFredSeries('DGS30'),
-      fetchFredHistory('DGS10', 240),   // 20 years history for percentile
-      fetchFredHistory('DGS2', 24),
-      fetchFredHistory('DGS10', 24),
-      fetchFredHistory('DGS30', 24)
     ]);
 
-    // Mandatory: y2 and y10 for spread calculation. y30 is optional.
     if (!y2 || !y10) {
-      console.error('[yields] Critical data missing:', { y2: !!y2, y10: !!y10 });
-      return res.status(200).json({ error: 'DATA_UNAVAILABLE', yield2y: null, yield10y: null });
+      console.warn('[yields] Core FRED yields unavailable, returning fallback data');
+      return res.status(200).json({
+        ...FALLBACK_DATA,
+        isFallback: true,
+        error: null
+      });
     }
+
+    // === Layer 2: Historical datasets - Failsafe fetching with Promise.allSettled ===
+    const [histResult, chart2yResult, chart10yResult, chart30yResult] = await Promise.allSettled([
+      fetchFredHistory('DGS10', 240, 'm'),
+      fetchFredHistory('DGS2', 24, 'm'),
+      fetchFredHistory('DGS10', 24, 'm'),
+      fetchFredHistory('DGS30', 24, 'm')
+    ]);
+
+    const history20y = histResult.status === 'fulfilled' ? histResult.value : [];
+    const chart2y    = chart2yResult.status === 'fulfilled' ? chart2yResult.value : [];
+    const chart10y   = chart10yResult.status === 'fulfilled' ? chart10yResult.value : [];
+    const chart30y   = chart30yResult.status === 'fulfilled' ? chart30yResult.value : [];
 
     const spread_2_10 = y10.value - y2.value;
     const spread_2_30 = y30 ? y30.value - y2.value : null;
@@ -373,22 +445,33 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     const mergedCharts = mergeChartData(chart2y, chart10y, chart30y);
 
+    // Debug log（生產環境可移除）
+    console.log('[yields] Chart data points:', {
+      dates:    mergedCharts.dates.length,
+      yield2y:  mergedCharts.yield2y.filter(v => v !== null).length,
+      yield10y: mergedCharts.yield10y.filter(v => v !== null).length,
+      yield30y: mergedCharts.yield30y.filter(v => v !== null).length,
+      sample2y:  mergedCharts.yield2y.slice(-3),
+      sample30y: mergedCharts.yield30y.slice(-3),
+    });
+
     // Ensure chart last point matches real-time if significant gap exists
-    if (y10 && mergedCharts.yield10y.length > 0) {
-      const lastIdx = mergedCharts.yield10y.length - 1;
-      const chartLast10y = mergedCharts.yield10y[lastIdx];
-      if (chartLast10y && Math.abs(chartLast10y - y10.value) > 0.01) {
-        const todayMonthMonth = y10.date.slice(0, 7);
-        if (todayMonthMonth !== mergedCharts.dates[lastIdx]) {
-          mergedCharts.dates.push(todayMonthMonth);
-          mergedCharts.yield2y.push(y2?.value ?? null);
-          mergedCharts.yield10y.push(y10.value);
-          mergedCharts.yield30y.push(y30?.value ?? null);
-        } else {
-          mergedCharts.yield10y[lastIdx] = y10.value;
-          if (y2) mergedCharts.yield2y[lastIdx] = y2.value;
-          if (y30) mergedCharts.yield30y[lastIdx] = y30.value;
-        }
+    if (y10 && mergedCharts.dates.length > 0) {
+      const todayMonth = y10.date.slice(0, 7);
+      const lastChartMonth = mergedCharts.dates[mergedCharts.dates.length - 1];
+
+      if (todayMonth !== lastChartMonth) {
+        // 新月份：追加一筆
+        mergedCharts.dates.push(todayMonth);
+        mergedCharts.yield2y.push(y2?.value  ?? null);
+        mergedCharts.yield10y.push(y10.value);
+        mergedCharts.yield30y.push(y30?.value ?? null);
+      } else {
+        // 同月份：更新最後一筆（三條線都更新）
+        const lastIdx = mergedCharts.dates.length - 1;
+        mergedCharts.yield2y[lastIdx]  = y2?.value  ?? mergedCharts.yield2y[lastIdx];
+        mergedCharts.yield10y[lastIdx] = y10.value;
+        mergedCharts.yield30y[lastIdx] = y30?.value ?? mergedCharts.yield30y[lastIdx];
       }
     }
 
@@ -419,13 +502,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         y30 ? y30.value : null,
         spread_2_10
       ),
-      chartData: mergedCharts
+      chartData: mergedCharts,
+      isFallback: false
     };
 
     cache = { data, ts: Date.now() };
     res.json(data);
   } catch (error) {
     console.error('[yields] Handler error:', error);
-    res.status(200).json({ error: 'INTERNAL_ERROR' });
+    res.status(200).json({
+      ...FALLBACK_DATA,
+      isFallback: true,
+      error: null
+    });
   }
 }
