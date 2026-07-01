@@ -6,7 +6,8 @@ import { STOCK_NAMES } from '../constants';
 interface EarningsData {
   symbol: string;
   name: string;
-  earningsDate: string;
+  earningsDate: string | null;
+  earningsDateStatus?: 'confirmed' | 'unknown';
   exDividendDate: string | null;
   summary?: {
     epsEstimate: number | null;
@@ -19,6 +20,9 @@ interface EarningsData {
     margin: number | null;
     growth: number | null;
     epsTTM: number | null;
+    lastEpsEstimate: number | null;
+    epsBeatMiss: number | null;
+    epsBeatMissPct: number | null;
   };
 }
 
@@ -103,6 +107,9 @@ export default function EarningsTracker({ onSelectStock }: { onSelectStock?: (sy
         margin: f.margin,
         growth: f.growth,
         epsTTM: 5.2,
+        lastEpsEstimate: 1.5,
+        epsBeatMiss: 0.1,
+        epsBeatMissPct: 6.7,
       }
     };
   };
@@ -177,6 +184,16 @@ export default function EarningsTracker({ onSelectStock }: { onSelectStock?: (sy
     // Default: try to parse as ISO string or other date format
     const parsed = new Date(val);
     return isNaN(parsed.getTime()) ? new Date() : parsed;
+  };
+
+  const displayEarningsDate = (val: any): string => {
+    if (!val) return 'TBD';
+    const d = safeDate(val);
+    const now = new Date();
+    if (d.getTime() < now.getTime() - 24 * 60 * 60 * 1000) {
+      return 'TBD';  // 已過期，顯示 TBD
+    }
+    return d.toLocaleDateString('zh-TW', { month: 'short', day: 'numeric' });
   };
 
   const [error, setError] = useState<string | null>(null);
@@ -315,7 +332,7 @@ export default function EarningsTracker({ onSelectStock }: { onSelectStock?: (sy
                   <div className="flex items-center gap-2 sm:gap-6 ml-auto">
                     <div className="flex flex-col items-end">
                       <span className="text-[10px] sm:text-xs font-medium text-text-dim">
-                        {safeDate(item.earningsDate).toLocaleDateString('zh-TW', { month: 'short', day: 'numeric' })}
+                        {item.earningsDateStatus === 'unknown' ? 'TBD' : displayEarningsDate(item.earningsDate)}
                       </span>
                       <span className="hidden sm:inline text-[10px] text-text-dim/50 uppercase tracking-tighter">Reporting Date</span>
                     </div>
@@ -348,18 +365,64 @@ export default function EarningsTracker({ onSelectStock }: { onSelectStock?: (sy
                         {/* EPS Comparison */}
                         <div className="p-4 bg-card-bg border border-border-subtle rounded-xl">
                           <div className="flex justify-between items-center mb-3">
-                            <span className="text-[10px] font-bold text-text-dim uppercase tracking-widest">EPS Comparison</span>
-                            <span className="text-[8px] bg-blue-500/10 text-blue-400 px-1.5 py-0.5 rounded uppercase font-bold">Actual vs Est</span>
+                            <span className="text-[10px] font-bold text-text-dim uppercase tracking-widest">EPS Comparison ({item.summary?.lastQuarterLabel || 'Last Q'})</span>
+                            {item.summary?.epsBeatMiss !== null && item.summary?.epsBeatMiss !== undefined ? (
+                              <span className={`text-[9px] px-2 py-0.5 rounded-full font-bold font-mono tracking-wide ${
+                                item.summary.epsBeatMiss > 0 
+                                  ? 'bg-green-500/10 text-green-400 border border-green-500/20' 
+                                  : item.summary.epsBeatMiss < 0 
+                                    ? 'bg-red-500/10 text-red-400 border border-red-500/20' 
+                                    : 'bg-zinc-500/10 text-zinc-400 border border-zinc-500/20'
+                              }`}>
+                                {item.summary.epsBeatMiss > 0 ? '🏆 BEAT' : item.summary.epsBeatMiss < 0 ? '⚠️ MISS' : '🎯 IN-LINE'}
+                              </span>
+                            ) : (
+                              <span className="text-[8px] bg-blue-500/10 text-blue-400 px-1.5 py-0.5 rounded uppercase font-bold">Actual vs Est</span>
+                            )}
                           </div>
-                          <div className="flex items-end gap-3">
-                            <div className="flex-1">
-                              <p className="text-[8px] text-text-dim/50 uppercase mb-1">Last ({item.summary?.lastQuarterLabel || 'N/A'})</p>
-                              <p className="text-xl font-bold">{item.summary?.epsActual !== null ? `$${item.summary.epsActual.toFixed(2)}` : '$N/A'}</p>
+                          <div className="grid grid-cols-3 gap-2 items-center">
+                            {/* Column 1: Last Actual */}
+                            <div className="text-left">
+                              <p className="text-[8px] text-text-dim/50 uppercase mb-1 font-semibold tracking-wider">Last Q Actual</p>
+                              <p className="text-lg sm:text-xl font-bold font-mono">
+                                {item.summary?.epsActual !== null && item.summary?.epsActual !== undefined 
+                                  ? `$${item.summary.epsActual.toFixed(2)}` 
+                                  : '$N/A'}
+                              </p>
                             </div>
-                            <div className="w-px h-8 bg-border-subtle" />
-                            <div className="flex-1">
-                              <p className="text-[8px] text-blue-400/70 uppercase mb-1 font-bold">Upcoming Est</p>
-                              <p className="text-xl font-bold text-blue-400">${item.summary?.epsEstimate?.toFixed(2) || 'N/A'}</p>
+                            
+                            {/* Column 2: Last Estimate & Beat/Miss info */}
+                            <div className="text-center border-x border-border-subtle/50 px-2">
+                              <p className="text-[8px] text-text-dim/50 uppercase mb-1 font-semibold tracking-wider">Last Q Est</p>
+                              <p className="text-lg sm:text-xl font-bold font-mono text-text-dim/80">
+                                {item.summary?.lastEpsEstimate !== null && item.summary?.lastEpsEstimate !== undefined 
+                                  ? `$${item.summary.lastEpsEstimate.toFixed(2)}` 
+                                  : '$N/A'}
+                              </p>
+                              {item.summary?.epsBeatMiss !== null && item.summary?.epsBeatMiss !== undefined && item.summary?.epsBeatMissPct !== null && item.summary?.epsBeatMissPct !== undefined && (
+                                <p className={`text-[9px] font-bold font-mono mt-0.5 ${
+                                  item.summary.epsBeatMiss > 0 
+                                    ? 'text-green-400' 
+                                    : item.summary.epsBeatMiss < 0 
+                                      ? 'text-red-400' 
+                                      : 'text-zinc-400'
+                                }`}>
+                                  {item.summary.epsBeatMiss > 0 ? '+' : ''}
+                                  {item.summary.epsBeatMiss.toFixed(2)} ({item.summary.epsBeatMissPct > 0 ? '+' : ''}{item.summary.epsBeatMissPct.toFixed(1)}%)
+                                </p>
+                              )}
+                            </div>
+                            
+                            {/* Column 3: Upcoming Est */}
+                            <div className="text-right">
+                              <p className="text-[8px] text-blue-400/70 uppercase mb-1 font-bold tracking-wider">
+                                Upcoming Est {item.earningsDateStatus === 'unknown' && <span className="text-[8px] text-text-dim/50 ml-1">(日期待確認)</span>}
+                              </p>
+                              <p className="text-lg sm:text-xl font-bold font-mono text-blue-400">
+                                {item.summary?.epsEstimate !== null && item.summary?.epsEstimate !== undefined 
+                                  ? `$${item.summary.epsEstimate.toFixed(2)}` 
+                                  : '$N/A'}
+                              </p>
                             </div>
                           </div>
                         </div>
@@ -381,7 +444,9 @@ export default function EarningsTracker({ onSelectStock }: { onSelectStock?: (sy
                             </div>
                             <div className="w-px h-8 bg-border-subtle" />
                             <div className="flex-1">
-                              <p className="text-[8px] text-blue-400/70 uppercase mb-1 font-bold">Upcoming Est</p>
+                              <p className="text-[8px] text-blue-400/70 uppercase mb-1 font-bold">
+                                Upcoming Est {item.earningsDateStatus === 'unknown' && <span className="text-[8px] text-text-dim/50 ml-1">(日期待確認)</span>}
+                              </p>
                               <p className="text-xl font-bold text-blue-400">{(item.summary?.revenueEstimate ? (item.summary.revenueEstimate / 1e9).toFixed(1) + 'B' : 'N/A')}</p>
                             </div>
                           </div>

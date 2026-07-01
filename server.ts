@@ -61,6 +61,13 @@ async function startServer() {
     const cached = cache.get(cacheKey);
     if (cached) return res.json(cached);
 
+    const isValidFutureDate = (dateStr: string | null): boolean => {
+      if (!dateStr) return false;
+      const date = new Date(dateStr);
+      const now = new Date();
+      return date.getTime() > now.getTime() - 24 * 60 * 60 * 1000;
+    };
+
     try {
       const results = await Promise.all(symbols.map(async (symbol) => {
         try {
@@ -77,10 +84,26 @@ async function startServer() {
           const prevEarnings = quarterlyEarnings[quarterlyEarnings.length - 2] || null;
           const prevFinancials = quarterlyFinancials[quarterlyFinancials.length - 2] || null;
 
+          const rawEarningsDate = quote.calendarEvents?.earnings?.earningsDate?.[0];
+          const formattedDate = formatYFDate(rawEarningsDate);
+
+          let earningsDate = formattedDate;
+          if (!isValidFutureDate(earningsDate)) {
+            const altDate = quote.calendarEvents?.earnings?.earningsDate?.[1];
+            const altFormatted = altDate ? formatYFDate(altDate) : null;
+            if (altFormatted && isValidFutureDate(altFormatted)) {
+              earningsDate = altFormatted;
+            } else {
+              earningsDate = null;
+            }
+          }
+          const earningsDateStatus = earningsDate ? 'confirmed' : 'unknown';
+
           return {
             symbol,
             name: quote.price?.shortName || symbol,
-            earningsDate: formatYFDate(quote.calendarEvents?.earnings?.earningsDate?.[0]),
+            earningsDate,
+            earningsDateStatus,
             exDividendDate: formatYFDate(quote.calendarEvents?.exDividendDate),
             summary: {
               epsEstimate: quote.calendarEvents?.earnings?.earningsAverage || null,
@@ -88,6 +111,13 @@ async function startServer() {
               epsActual: lastEarnings?.actual || null,
               revenueActual: lastFinancials?.revenue || null,
               lastQuarterLabel: lastEarnings?.date || null,
+              lastEpsEstimate: lastEarnings?.estimate !== undefined && lastEarnings?.estimate !== null ? lastEarnings.estimate : null,
+              epsBeatMiss: lastEarnings?.actual != null && lastEarnings?.estimate != null
+                ? parseFloat((lastEarnings.actual - lastEarnings.estimate).toFixed(2))
+                : null,
+              epsBeatMissPct: lastEarnings?.actual != null && lastEarnings?.estimate != null && lastEarnings.estimate !== 0
+                ? parseFloat(((lastEarnings.actual - lastEarnings.estimate) / Math.abs(lastEarnings.estimate) * 100).toFixed(1))
+                : null,
               prevEpsActual: prevEarnings?.actual || null,
               prevRevenueActual: prevFinancials?.revenue || null,
               margin: quote.financialData?.profitMargins || null,
@@ -97,7 +127,7 @@ async function startServer() {
           };
         } catch (e) {
           console.warn(`Failed to fetch ${symbol}:`, e);
-          return { symbol, name: symbol, earningsDate: new Date().toISOString(), exDividendDate: null, summary: null };
+          return { symbol, name: symbol, earningsDate: null, earningsDateStatus: 'unknown', exDividendDate: null, summary: null };
         }
       }));
       
@@ -130,10 +160,33 @@ async function startServer() {
       const prevEarnings = quarterlyEarnings[quarterlyEarnings.length - 2] || null;
       const prevFinancials = quarterlyFinancials[quarterlyFinancials.length - 2] || null;
 
+      const rawEarningsDate = quote.calendarEvents?.earnings?.earningsDate?.[0];
+      const formattedDate = formatYFDate(rawEarningsDate);
+
+      const isValidFutureDate = (dateStr: string | null): boolean => {
+        if (!dateStr) return false;
+        const date = new Date(dateStr);
+        const now = new Date();
+        return date.getTime() > now.getTime() - 24 * 60 * 60 * 1000;
+      };
+
+      let earningsDate = formattedDate;
+      if (!isValidFutureDate(earningsDate)) {
+        const altDate = quote.calendarEvents?.earnings?.earningsDate?.[1];
+        const altFormatted = altDate ? formatYFDate(altDate) : null;
+        if (altFormatted && isValidFutureDate(altFormatted)) {
+          earningsDate = altFormatted;
+        } else {
+          earningsDate = null;
+        }
+      }
+      const earningsDateStatus = earningsDate ? 'confirmed' : 'unknown';
+
       const result = {
         symbol: symbol.toUpperCase(),
         name: quote.price?.shortName || symbol.toUpperCase(),
-        earningsDate: formatYFDate(quote.calendarEvents?.earnings?.earningsDate?.[0]),
+        earningsDate,
+        earningsDateStatus,
         exDividendDate: formatYFDate(quote.calendarEvents?.exDividendDate),
         summary: {
           epsEstimate: quote.calendarEvents?.earnings?.earningsAverage || null,
@@ -141,6 +194,13 @@ async function startServer() {
           epsActual: lastEarnings?.actual || null,
           revenueActual: lastFinancials?.revenue || null,
           lastQuarterLabel: lastEarnings?.date || null,
+          lastEpsEstimate: lastEarnings?.estimate !== undefined && lastEarnings?.estimate !== null ? lastEarnings.estimate : null,
+          epsBeatMiss: lastEarnings?.actual != null && lastEarnings?.estimate != null
+            ? parseFloat((lastEarnings.actual - lastEarnings.estimate).toFixed(2))
+            : null,
+          epsBeatMissPct: lastEarnings?.actual != null && lastEarnings?.estimate != null && lastEarnings.estimate !== 0
+            ? parseFloat(((lastEarnings.actual - lastEarnings.estimate) / Math.abs(lastEarnings.estimate) * 100).toFixed(1))
+            : null,
           prevEpsActual: prevEarnings?.actual || null,
           prevRevenueActual: prevFinancials?.revenue || null,
           margin: quote.financialData?.profitMargins || null,

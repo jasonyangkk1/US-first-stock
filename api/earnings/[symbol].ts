@@ -18,10 +18,33 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const prevEarnings = quarterlyEarnings[quarterlyEarnings.length - 2] || null;
     const prevFinancials = quarterlyFinancials[quarterlyFinancials.length - 2] || null;
 
+    const rawEarningsDate = quote.calendarEvents?.earnings?.earningsDate?.[0];
+    const formattedDate = formatYFDate(rawEarningsDate);
+
+    const isValidFutureDate = (dateStr: string | null): boolean => {
+      if (!dateStr) return false;
+      const date = new Date(dateStr);
+      const now = new Date();
+      return date.getTime() > now.getTime() - 24 * 60 * 60 * 1000;
+    };
+
+    let earningsDate = formattedDate;
+    if (!isValidFutureDate(earningsDate)) {
+      const altDate = quote.calendarEvents?.earnings?.earningsDate?.[1];
+      const altFormatted = altDate ? formatYFDate(altDate) : null;
+      if (altFormatted && isValidFutureDate(altFormatted)) {
+        earningsDate = altFormatted;
+      } else {
+        earningsDate = null;
+      }
+    }
+    const earningsDateStatus = earningsDate ? 'confirmed' : 'unknown';
+
     res.json({
       symbol: ticker,
       name: quote.price?.shortName || ticker,
-      earningsDate: formatYFDate(quote.calendarEvents?.earnings?.earningsDate?.[0]),
+      earningsDate,
+      earningsDateStatus,
       exDividendDate: formatYFDate(quote.calendarEvents?.exDividendDate),
       summary: {
         epsEstimate: quote.calendarEvents?.earnings?.earningsAverage || null,
@@ -29,6 +52,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         epsActual: lastEarnings?.actual || null,
         revenueActual: lastFinancials?.revenue || null,
         lastQuarterLabel: lastEarnings?.date || null,
+        lastEpsEstimate: lastEarnings?.estimate !== undefined && lastEarnings?.estimate !== null ? lastEarnings.estimate : null,
+        epsBeatMiss: lastEarnings?.actual != null && lastEarnings?.estimate != null
+          ? parseFloat((lastEarnings.actual - lastEarnings.estimate).toFixed(2))
+          : null,
+        epsBeatMissPct: lastEarnings?.actual != null && lastEarnings?.estimate != null && lastEarnings.estimate !== 0
+          ? parseFloat(((lastEarnings.actual - lastEarnings.estimate) / Math.abs(lastEarnings.estimate) * 100).toFixed(1))
+          : null,
         prevEpsActual: prevEarnings?.actual || null,
         prevRevenueActual: prevFinancials?.revenue || null,
         margin: quote.financialData?.profitMargins || null,
