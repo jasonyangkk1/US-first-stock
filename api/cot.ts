@@ -5,12 +5,34 @@ const NASDAQ_API_KEY = process.env.NASDAQ_DATA_LINK_API_KEY; // 免費申請：d
 let cache: { data: any; ts: number } | null = null;
 const CACHE_TTL = 3600000; // 1小時
 
+async function fetchWithTimeout(url: string, init?: RequestInit, timeoutMs = 8000) {
+  let timeoutId: any = null;
+  let signal: AbortSignal | undefined = undefined;
+
+  if (typeof AbortController !== 'undefined') {
+    const controller = new AbortController();
+    signal = controller.signal;
+    timeoutId = setTimeout(() => {
+      controller.abort();
+    }, timeoutMs);
+  }
+
+  try {
+    const response = await fetch(url, { ...init, signal: signal ?? init?.signal });
+    if (timeoutId) clearTimeout(timeoutId);
+    return response;
+  } catch (err) {
+    if (timeoutId) clearTimeout(timeoutId);
+    throw err;
+  }
+}
+
 // 層1：Quandl/Nasdaq Data Link (需要 API Key, 備用)
 async function fetchFromNasdaq(): Promise<{ value: number; date: string; history: Array<{date: string, value: number}> } | null> {
   if (!NASDAQ_API_KEY) return null;
   try {
     const url = `https://data.nasdaq.com/api/v3/datasets/CFTC/097741_FO_ALL_CR.json?api_key=${NASDAQ_API_KEY}&rows=52`;
-    const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
+    const res = await fetchWithTimeout(url, undefined, 8000);
     if (!res.ok) return null;
     const json: any = await res.json();
     
@@ -51,10 +73,9 @@ async function fetchFromCFTCSocrata(): Promise<{ value: number; date: string; hi
   try {
     // 查詢 CME 日圓期貨合約 097741 的投機性空單 (noncomm_positions_short_all)
     const url = 'https://publicreporting.cftc.gov/resource/6dca-aqww.json?cftc_contract_market_code=097741&$order=report_date_as_yyyy_mm_dd DESC&$limit=52';
-    const res = await fetch(url, {
-      headers: { 'Accept': 'application/json' },
-      signal: AbortSignal.timeout(10000)
-    });
+    const res = await fetchWithTimeout(url, {
+      headers: { 'Accept': 'application/json' }
+    }, 10000);
     if (!res.ok) return null;
     const records: any[] = await res.json();
     if (!records || !records.length) return null;

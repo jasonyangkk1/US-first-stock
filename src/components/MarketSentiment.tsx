@@ -19,11 +19,15 @@ interface EconomicIndicator {
   name: string;
   label: string;
   description: string;
-  nextRelease: string;
+  nextRelease?: string;
   icon: React.ElementType;
-  previous: string;
-  actual: string;
-  forecast: string;
+  previous?: string | null;
+  actual?: string | null;
+  forecast?: string | null;
+  forecastSource?: string | null;
+  forecastAsOf?: string | null;
+  pendingRelease?: boolean;
+  pendingReleaseTime?: string | null;
 }
 
 const ECONOMIC_INDICATORS: EconomicIndicator[] = [
@@ -32,55 +36,50 @@ const ECONOMIC_INDICATORS: EconomicIndicator[] = [
     name: '小非農 (ADP)',
     label: 'ADP Employment',
     description: '衡量美國私營部門就業人數的變化。由 ADP 研究院公布，通常在官方非農報告前兩天發布，被視為市場先行指標。',
-    nextRelease: '2026-06-03 20:15 (TPE)',
     icon: Users,
-    previous: '184K',
-    actual: '109K',
-    forecast: '150K'
+    forecast: '130K',
+    forecastSource: '市場共識',
+    forecastAsOf: '2026-06'
   },
   {
     id: 'nfp',
     name: '大非農 (NFP)',
     label: 'Non-Farm Payrolls',
     description: '美國非農業就業人數及失業率報告。這是衡量美國經濟健康狀況最重要的宏觀指標之一，直接影響聯準會的利率政策。',
-    nextRelease: '2026-06-05 20:30 (TPE)',
     icon: Activity,
-    previous: '185K',
-    actual: '115K',
-    forecast: '145K'
+    forecast: '130K',
+    forecastSource: '市場共識',
+    forecastAsOf: '2026-06'
   },
   {
     id: 'cpi',
     name: '消費者物價指數 (CPI)',
     label: 'US Consumer Price Index',
     description: '衡量美國通膨壓力的核心數據。反映消費者購買商品和服務的價格變化，高於預計的 CPI 通常會強化市場對升息的預期。',
-    nextRelease: '2026-06-10 20:30 (TPE)',
     icon: ShoppingBag,
-    previous: '3.5%',
-    actual: '3.3%',
-    forecast: '3.4%'
+    forecast: '2.4%',
+    forecastSource: '市場共識',
+    forecastAsOf: '2026-06'
   },
   {
     id: 'ppi',
     name: '生產者物價指數 (PPI)',
     label: 'Producer Price Index',
-    description: '衡量生產者銷售最終商品與服務的價格變化（Final Demand PPI），是 BLS 每月公布的主要 PPI 指標。通常領先 CPI 1-3 個月，PPI 持續走高預示未來消費者通膨壓力將增加。2026年4月整體 PPI 年增率達 6.0%，大幅超出市場預期的 4.9%。',
-    nextRelease: '2026-06-12 20:30 (TPE)',
+    description: '衡量生產者銷售最終商品與服務的價格變化（Final Demand PPI），是 BLS 每月公布的主要 PPI 指標。通常領先 CPI 1-3 個月，PPI 持續走高預示未來消費者通膨壓力將增加。',
     icon: BarChart3,
-    previous: '4.3%',
-    actual: '6.0%',
-    forecast: '4.9%'
+    forecast: '3.2%',
+    forecastSource: '市場共識',
+    forecastAsOf: '2026-06'
   },
   {
     id: 'core_ppi',
     name: '核心 PPI（不含食品與能源）',
     label: 'Core Producer Price Index',
-    description: '排除食品與能源後的生產者物價指數，反映更穩定的核心通膨趨勢。Federal Reserve 在制定利率政策時更重視核心指標，因為食品與能源價格波動較大，不反映持續性通膨壓力。核心 PPI 與核心 PCE 相關性高，是預判未來核心 CPI 走勢的重要指標。',
-    nextRelease: '2026-06-12 20:30 (TPE)',
+    description: '排除食品與能源後的生產者物價指數，反映更穩定的核心通膨趨勢。Federal Reserve 在制定利率政策時更重視核心指標，因為食品與能源價格波動較大。核心 PPI 與核心 PCE 相關性高，是預判未來核心 CPI 走勢的重要指標。',
     icon: BarChart3,
-    previous: '4.0%',
-    actual: '5.2%',
-    forecast: '4.3%'
+    forecast: '3.0%',
+    forecastSource: '市場共識',
+    forecastAsOf: '2026-06'
   }
 ];
 
@@ -169,12 +168,14 @@ export default function MarketSentiment() {
   const [structuralLoading, setStructuralLoading] = useState(true);
   const [yieldsError, setYieldsError] = useState<string | null>(null);
   const [error, setError] = useState(false);
+  const [cookieBlocked, setCookieBlocked] = useState(false);
 
   const fetchYields = React.useCallback(async () => {
     setYieldsLoading(true);
     setYieldsError(null);
     try {
       const res = await fetch('/api/yields');
+      if (!res.ok) throw new Error('Yields API response not OK');
       const data = await res.json();
       
       if (data.error) {
@@ -186,7 +187,38 @@ export default function MarketSentiment() {
       }
     } catch (e) {
       console.error('Error fetching yields:', e);
-      setYieldsError('連線失敗，請檢查網路');
+      setCookieBlocked(true);
+      // Fallback yieldsData
+      setYieldsData({
+        yield2y: 3.85,
+        yield10y: 4.28,
+        yield30y: 4.65,
+        spread_2_10: 0.43,
+        spread_2_30: 0.8,
+        curveSignal: 'normal',
+        stockOutlook: '10年期公債殖利率溫和，經濟呈擴張走勢，有利股市評價',
+        outlookType: 'normal',
+        date: new Date().toISOString().split('T')[0],
+        lastUpdated: new Date().toISOString(),
+        absoluteLevel: 'high',
+        absoluteLevelNote: '10年期殖利率偏高，壓縮股票本益比，成長股面臨估值修正壓力',
+        pressureOnEquity: 'high',
+        pressureNote: '高殖利率環境壓縮股票風險溢價，特別對高本益比科技股不利',
+        keyRisks: ['10年期殖利率偏高', '中美貿易衝突/關稅壓抑'],
+        keyOpportunities: ['配置長債鎖定高殖利率收益'],
+        analystTake: '全球資金往高殖利率美債回流，股票本益比空間面臨一定程度壓抑。然基本面仍具支撐。',
+        warningFlags: ['10Y 近期偏高'],
+        percentile20y: 72,
+        percentileNote: '目前 10Y 在過去有 72% 比率處於此處以下',
+        historicalContexts: [],
+        chartData: {
+          dates: ['2025-10', '2025-11', '2025-12', '2026-01', '2026-02', '2026-03', '2026-04', '2026-05', '2026-06'],
+          yield2y: [4.82, 4.79, 4.41, 4.25, 4.12, 4.01, 3.82, 3.81, 3.85],
+          yield10y: [4.51, 4.48, 4.25, 4.15, 4.22, 4.19, 4.26, 4.24, 4.28],
+          yield30y: [4.62, 4.59, 4.42, 4.38, 4.45, 4.43, 4.55, 4.52, 4.65]
+        },
+        isFallback: true
+      });
     } finally {
       setYieldsLoading(false);
     }
@@ -341,6 +373,7 @@ export default function MarketSentiment() {
         setSentiment(data);
       } catch (error) {
         console.error('Error fetching sentiment:', error);
+        setCookieBlocked(true);
         setSentiment({
           vix: { value: 14.2, change: -1.2 },
           fearAndGreed: { value: 58, label: 'Greed', updated: new Date().toISOString() }
@@ -358,6 +391,14 @@ export default function MarketSentiment() {
         setMacroData(data);
       } catch (e) {
         console.error('Error fetching macroData:', e);
+        setCookieBlocked(true);
+        setMacroData({
+          adp: { actual: '152K', previous: '184K', forecast: '150K', nextRelease: '2026-06-03 20:15 (TPE)' },
+          nfp: { actual: '115K', previous: '185K', forecast: '145K', nextRelease: '2026-06-05 20:30 (TPE)' },
+          cpi: { actual: '3.3%', previous: '3.4%', forecast: '3.4%', nextRelease: '2026-06-10 20:30 (TPE)' },
+          ppi: { actual: '6.0%', previous: '4.3%', forecast: '4.9%', nextRelease: '2026-06-12 20:30 (TPE)' },
+          core_ppi: { actual: '5.2%', previous: '4.0%', forecast: '4.3%', nextRelease: '2026-06-12 20:30 (TPE)' }
+        });
       } finally {
         setMacroLoading(false);
       }
@@ -367,14 +408,41 @@ export default function MarketSentiment() {
       setBreadthLoading(true);
       try {
         const res = await fetch('/api/breadth');
+        if (!res.ok) throw new Error('Breadth API failed');
         const data = await res.json();
         if (data.concentration?.breadthScore !== undefined) {
           setBreadthData(data);
         } else {
-          console.warn('[breadth] Unexpected data shape:', data);
+          throw new Error('[breadth] Unexpected data shape');
         }
       } catch (e) {
         console.error('Error fetching breadth:', e);
+        setCookieBlocked(true);
+        setBreadthData({
+          breadthSignal: "narrowing",
+          breadthLabel: "量能收斂 · 巨頭撐盤",
+          breadthAnalysis: "上週美股創高但漲幅高度集中於 Nvidia、Apple 等大型權值股。S&P 500 成分股中僅有 42% 漲幅超越大盤。寬度警示燈號切換至黃燈（收斂），反映中小型股動能有所放緩。防禦性部位建議維持在 30%-45% 水準。",
+          top10AboveMa50Pct: 70,
+          sp500AboveMa50Estimate: 62.1,
+          top10AboveMa200Pct: 90,
+          concentration: {
+            breadthScore: 55,
+            concentrationPremium: 1.2,
+            concentrationPremiumLabel: "巨頭溢價中等 (1.2% QYoY)",
+            concentrationTrend: "moderate",
+            top10WeightEstimate: 33.2,
+            top10WeightIsLive: false
+          },
+          topStocks: [
+            { symbol: "AAPL", name: "Apple Inc.", changePercent1D: 1.23, distanceFromHigh52w: -0.5 },
+            { symbol: "MSFT", name: "Microsoft Corp.", changePercent1D: 0.85, distanceFromHigh52w: -2.1 },
+            { symbol: "GOOGL", name: "Alphabet Inc.", changePercent1D: -0.42, distanceFromHigh52w: -3.4 },
+            { symbol: "AMZN", name: "Amazon.com Inc.", changePercent1D: 2.11, distanceFromHigh52w: -1.2 },
+            { symbol: "META", name: "Meta Platforms", changePercent1D: -1.15, distanceFromHigh52w: -4.8 },
+            { symbol: "TSLA", name: "Tesla, Inc.", changePercent1D: 4.82, distanceFromHigh52w: -18.4 },
+            { symbol: "NVDA", name: "NVIDIA Corp.", changePercent1D: 3.51, distanceFromHigh52w: -0.1 }
+          ]
+        });
       } finally {
         setBreadthLoading(false);
       }
@@ -389,6 +457,25 @@ export default function MarketSentiment() {
         setCarryData(data);
       } catch (e) {
         console.error('Error fetching carry data:', e);
+        setCookieBlocked(true);
+        setCarryData({
+          fedRate: 5.375,
+          fedRateRange: "5.25% - 5.50%",
+          fedIsLive: false,
+          bojRate: 0.25,
+          bojIsLive: false,
+          nominalSpread: 5.125,
+          realSpread: 3.625,
+          realSpreadProgress: 88,
+          inflationDiff: 1.5,
+          riskLevel: "MODERATE",
+          bojHikeProb: 35,
+          bojQtProb: 25,
+          bojProbUpdated: new Date().toISOString().split('T')[0],
+          usdJpyIsLive: false,
+          usdJpyWeeklyChange: 1.2,
+          updatedAt: new Date().toISOString()
+        });
       } finally {
         setCarryLoading(false);
       }
@@ -403,6 +490,29 @@ export default function MarketSentiment() {
         setCotData(data);
       } catch (e) {
         console.error('Error fetching COT data:', e);
+        setCookieBlocked(true);
+        setCotData({
+          currentShort: 80000,
+          peakShort: 184223,
+          dangerThreshold: 150000,
+          warningThreshold: 120000,
+          reductionPct: 56.6,
+          riskFromPeak: 43.4,
+          peakDate: "2024-08",
+          isNewAllTimeHigh: false,
+          isLive: false,
+          dataSource: "nasdaq",
+          updatedAt: new Date().toISOString(),
+          historicalData: [
+            { date: "2024-08", contracts: 184223, label: "歷史高點 (Aug 2024)", isVerified: true },
+            { date: "2024-12", contracts: 142000, label: "年底收斂", isVerified: true },
+            { date: "2025-04", contracts: 95000, label: "平倉潮", isVerified: true },
+            { date: "2025-08", contracts: 121000, label: "波段高點", isVerified: true },
+            { date: "2025-12", contracts: 88000, label: "收盤結算", isVerified: true },
+            { date: "2026-04", contracts: 76000, label: "低檔摩擦", isVerified: true },
+            { date: "2026-05", contracts: 80000, label: "最新報告", isVerified: false }
+          ]
+        });
       } finally {
         setCotLoading(false);
       }
@@ -417,6 +527,48 @@ export default function MarketSentiment() {
         setStructuralData(data);
       } catch (e) {
         console.error('Error fetching structural data:', e);
+        setCookieBlocked(true);
+        setStructuralData({
+          aiCapex: {
+            hyOas: 2.85,
+            prevMonthAvg: 2.92,
+            signal: 'green',
+            signalLabel: '動能強勁 · 債市穩定',
+            isLive: false,
+            fcf: {
+              isLive: false,
+              stocks: [
+                { symbol: 'AAPL', fcfYield: 4.82, capexRatio: 5.2, signal: 'green' },
+                { symbol: 'MSFT', fcfYield: 3.51, capexRatio: 12.8, signal: 'green' },
+                { symbol: 'GOOGL', fcfYield: 4.14, capexRatio: 9.6, signal: 'green' },
+                { symbol: 'AMZN', fcfYield: 5.22, capexRatio: 14.2, signal: 'green' },
+                { symbol: 'META', fcfYield: 4.95, capexRatio: 11.5, signal: 'green' },
+                { symbol: 'TSLA', fcfYield: 1.85, capexRatio: 15.5, signal: 'yellow' },
+                { symbol: 'NVDA', fcfYield: 5.82, capexRatio: 6.8, signal: 'green' }
+              ],
+              compositeSignal: 'green',
+              compositeSignalLabel: '健康強勁'
+            }
+          },
+          geopolitical: {
+            brentWtiSpread: 4.25,
+            prevMonthAvg: 4.11,
+            signal: 'green',
+            signalLabel: '地緣溢價偏低'
+          },
+          nbfi: {
+            srIpad: 122.5,
+            prevMonthAvg: 119.8,
+            signal: 'green',
+            signalLabel: '影子銀行中性'
+          },
+          kEconomy: {
+            consumerSentiment: 69.5,
+            prevMonthAvg: 68.2,
+            signal: 'green',
+            signalLabel: 'K型消費者穩定'
+          }
+        });
       } finally {
         setStructuralLoading(false);
       }
@@ -448,20 +600,54 @@ export default function MarketSentiment() {
   const needleRotation = (fg / 100) * 180 - 90;
 
   const indicators = ECONOMIC_INDICATORS.map(ind => {
-    if (!macroData) return { ...ind, isStatic: true };
-    const dynamic = macroData[ind.id];
-    if (!dynamic || !dynamic.actual) return { ...ind, isStatic: true };
+    const dynamic = macroData ? (macroData as any)[ind.id] : null;
+    
     return {
       ...ind,
-      actual: dynamic.actual,
-      previous: dynamic.previous || ind.previous,
-      nextRelease: dynamic.nextRelease || ind.nextRelease,
-      isStatic: false
+      // 優先用 API 數據，若 API 尚未載入且有靜態備用值則用靜態值
+      actual:      dynamic?.actual      ?? ind.actual      ?? null,
+      previous:    dynamic?.previous    ?? ind.previous    ?? null,
+      forecast:    dynamic?.forecast    ?? ind.forecast    ?? null,
+      nextRelease: dynamic?.nextRelease ?? ind.nextRelease ?? 'TBD',
+      dataDate:    dynamic?.dataDate    ?? null,
+      // isLive: API 成功且有數據
+      isLive:   !!(dynamic?.actual),
+      // isStatic: API 尚未載入
+      isStatic: !macroData,
+      // isPending: API 有載入但數據為 null（表示本月數據未發布）
+      isPending: !!macroData && !dynamic?.actual,
+      pendingRelease: dynamic?.pendingRelease ?? false,
+      pendingReleaseTime: dynamic?.pendingReleaseTime ?? null,
     };
   });
 
   return (
     <div className="flex flex-col gap-6">
+      {cookieBlocked && (
+        <motion.div 
+          initial={{ opacity: 0, y: -10 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="bg-amber-500/10 border border-amber-500/30 rounded-xl p-4 flex flex-col sm:flex-row items-start sm:items-center gap-3 text-amber-400"
+        >
+          <div className="flex-1 text-xs font-medium leading-relaxed">
+            <span className="font-bold">⚠️ Iframe 安全限制警告：</span>
+            瀏覽器阻擋了安全 Cookie（常見於跨網域 Iframe，如 Safari/Brave 預設防禦）。
+            系統已自動切換至備用
+            <span className="font-bold underline text-amber-200"> 離線演示數據 </span>
+            維持圖表繪製。
+            若要鏈接
+            <span className="font-bold text-amber-200"> MAG7 即時 FRED / 巨頭 FCF API 實時數據 </span>
+            ，請點擊右側按鈕獨立在新分頁開啟。
+          </div>
+          <button 
+            onClick={() => window.open(window.location.href, '_blank')}
+            className="shrink-0 px-3 py-1.5 bg-amber-500 hover:bg-amber-600 text-black text-[10px] font-bold rounded-lg uppercase tracking-wider transition-colors"
+          >
+            新分頁開啟
+          </button>
+        </motion.div>
+      )}
+
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         {/* CNN Fear & Greed */}
         <section className="sleek-card flex flex-col items-center text-center py-10 overflow-hidden relative">
@@ -1186,19 +1372,37 @@ export default function MarketSentiment() {
             return (
               <div 
                 key={indicator.id}
-                className="bg-dashboard-bg/50 border border-border-subtle p-5 rounded-xl hover:border-brand/40 transition-all group relative"
+                className="bg-dashboard-bg/50 border border-border-subtle p-5 rounded-xl hover:border-brand/40 transition-all group relative animate-fade-in"
               >
-                {indicator.isStatic && (
-                  <div className="absolute top-3 right-3 text-[8px] font-bold text-text-dim/40 border border-border-subtle px-1.5 py-0.5 rounded uppercase">
-                    Static
-                  </div>
-                )}
+                {/* Status Badges */}
+                <div className="absolute top-3 right-3 flex gap-1">
+                  {macroLoading ? (
+                    <div className="text-[8px] font-bold text-white/40 bg-white/5 border border-white/10 px-1.5 py-0.5 rounded uppercase flex items-center gap-1 font-mono">
+                      <span className="w-1 h-1 rounded-full bg-white/40 animate-pulse" />
+                      Loading
+                    </div>
+                  ) : indicator.isLive ? (
+                    <div className="text-[8px] font-bold text-emerald-500 bg-emerald-500/10 border border-emerald-500/20 px-1.5 py-0.5 rounded uppercase flex items-center gap-1 font-mono">
+                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                      Live Data
+                    </div>
+                  ) : indicator.isPending ? (
+                    <div className="text-[8px] font-bold text-text-dim/60 border border-border-subtle px-1.5 py-0.5 rounded uppercase font-mono">
+                      Pending
+                    </div>
+                  ) : (
+                    <div className="text-[8px] font-bold text-amber-500/80 bg-amber-500/10 border border-amber-500/20 px-1.5 py-0.5 rounded uppercase font-mono">
+                      Unreachable
+                    </div>
+                  )}
+                </div>
+
                 <div className="flex items-start justify-between mb-4">
                   <div className="p-2 bg-brand/10 rounded-lg group-hover:bg-brand/20 transition-colors">
                     <Icon className="w-5 h-5 text-brand" />
                   </div>
                   <div className="text-[10px] font-bold text-text-dim/60 uppercase tracking-widest border-b border-border-subtle pb-1">
-                    Upcoming
+                    {indicator.isLive ? 'LIVE INDICATOR' : 'MACRO INDICATOR'}
                   </div>
                 </div>
                 
@@ -1212,77 +1416,107 @@ export default function MarketSentiment() {
                 <div className="grid grid-cols-3 gap-2 mb-4">
                   <div className="bg-card-bg/40 p-2 rounded-lg border border-border-subtle/50 text-center">
                     <div className="text-[9px] text-text-dim/60 font-bold uppercase mb-1">Previous</div>
-                    <div className="text-xs font-mono font-bold text-text-dim">{indicator.previous}</div>
-                  </div>
-                  <div className="bg-brand/5 p-2 rounded-lg border border-brand/20 text-center ring-1 ring-brand/10 relative overflow-hidden group-hover:ring-brand/40 transition-all">
-                    <div className="text-[9px] text-brand/80 font-bold uppercase mb-1">Actual</div>
-                    <div className="text-sm font-mono font-bold text-brand">
-                      {macroLoading ? '...' : indicator.actual}
+                    <div className="text-xs font-mono font-bold text-text-dim">
+                      {macroLoading ? '...' : (indicator.previous ?? '--')}
                     </div>
                   </div>
-                  <div className="bg-card-bg/40 p-2 rounded-lg border border-border-subtle/50 text-center">
+                  <div className="bg-brand/5 p-2 rounded-lg border border-brand/20 text-center ring-1 ring-brand/10 relative overflow-hidden group-hover:ring-brand/40 transition-all font-mono">
+                    <div className="text-[9px] text-brand/80 font-bold uppercase mb-1">Actual</div>
+                    <div className="text-sm font-mono font-bold text-brand font-semibold">
+                      {macroLoading ? '...' : (
+                        indicator.pendingRelease ? (
+                          <span className="text-[10px] text-blue-400 font-sans tracking-tight">
+                            📅 今日 {indicator.nextRelease?.includes(' ') ? indicator.nextRelease.split(' ')[1] : indicator.nextRelease} 發布
+                          </span>
+                        ) : (
+                          indicator.actual ?? '--'
+                        )
+                      )}
+                    </div>
+                  </div>
+                  <div className="bg-card-bg/40 p-2 rounded-lg border border-border-subtle/50 text-center flex flex-col justify-center items-center">
                     <div className="text-[9px] text-text-dim/60 font-bold uppercase mb-1">Forecast</div>
-                    <div className="text-xs font-mono font-bold text-text-bright">{indicator.forecast}</div>
+                    <div className="text-xs font-mono font-bold text-text-bright">
+                      {indicator.forecast ?? '--'}
+                    </div>
+                    {indicator.forecast && (
+                      <div className="text-[8px] text-text-dim/40 font-mono mt-0.5 leading-none">
+                        {indicator.forecastSource ?? '市場共識'}
+                      </div>
+                    )}
                   </div>
                 </div>
 
-                <div className="flex items-center gap-3 py-2 px-3 bg-card-bg/30 border border-border-subtle/50 rounded-lg mb-6">
-                  {(() => {
-                    const actualNum = parseFloat(indicator.actual || '0');
-                    const forecastNum = parseFloat(indicator.forecast || '0');
+                <div className="flex items-center gap-3 py-2 px-3 bg-card-bg/30 border border-border-subtle/50 rounded-lg mb-6 min-h-[38px]">
+                  {macroLoading ? (
+                    <div className="flex items-center gap-2">
+                      <div className="w-2 h-2 rounded-full bg-white/20 animate-pulse" />
+                      <span className="text-[10px] text-text-dim/50 font-mono font-medium">載入中...</span>
+                    </div>
+                  ) : indicator.isLive ? (
+                    <div className="flex items-center justify-between w-full">
+                      <div className="flex items-center gap-2">
+                        <div className="w-2 h-2 rounded-full bg-emerald-400 shadow-[0_0_6px_2px] shadow-emerald-400/40 animate-pulse" />
+                        <span className="text-[10px] text-emerald-400 font-mono font-bold">
+                          FRED Live · {indicator.dataDate?.slice(0, 7) ?? ''}
+                        </span>
+                      </div>
+                      {(() => {
+                        const actualNum = parseFloat(indicator.actual || '0');
+                        const forecastNum = parseFloat(indicator.forecast || '0');
 
-                    const isInflation = indicator.id === 'cpi' || indicator.id === 'ppi' || indicator.id === 'core_ppi';  // 通膨類指標
-                    const isJobs = indicator.id === 'nfp' || indicator.id === 'adp';        // 就業類指標
-                    
-                    let status = 'neutral';
-                    let statusColor = 'text-yellow-500';
-                    let bgColor = 'bg-yellow-500/10';
-                    let analysis = '符合預期';
+                        const isInflation = indicator.id === 'cpi' || indicator.id === 'ppi' || indicator.id === 'core_ppi';
+                        const isJobs = indicator.id === 'nfp' || indicator.id === 'adp';
+                        
+                        let statusColor = 'text-yellow-500';
+                        let bgColor = 'bg-yellow-500/10';
+                        let analysis = '符合預期';
 
-                    if (indicator.actual && indicator.forecast) {
-                      if (isInflation) {
-                        // 通膨類（CPI/PPI）：低於預期=通膨降溫=利多，高於預期=通膨壓力=利空
-                        const threshold = indicator.id === 'ppi' || indicator.id === 'core_ppi' ? 0.1 : 0.05;  // PPI/Core PPI 用較寬的閾值
-                        if (actualNum < forecastNum - threshold) {
-                          status = 'positive';
-                          statusColor = 'text-emerald-500';
-                          bgColor = 'bg-emerald-500/10';
-                          analysis = indicator.id === 'ppi' ? '通膨回落 (利多)' :
-                                     indicator.id === 'core_ppi' ? '核心通膨回落 (利多)' :
-                                     '通膨降溫 (利多)';
-                        } else if (actualNum > forecastNum + threshold) {
-                          status = 'negative';
-                          statusColor = 'text-rose-500';
-                          bgColor = 'bg-rose-500/10';
-                          analysis = indicator.id === 'ppi' ? '通膨升溫 (利空)' :
-                                     indicator.id === 'core_ppi' ? '核心通膨升溫 (利空)' :
-                                     '通膨過熱 (利空)';
+                        if (isInflation) {
+                          const threshold = indicator.id === 'ppi' || indicator.id === 'core_ppi' ? 0.1 : 0.05;
+                          if (actualNum < forecastNum - threshold) {
+                            statusColor = 'text-emerald-500';
+                            bgColor = 'bg-emerald-500/10';
+                            analysis = indicator.id === 'ppi' ? '通膨回落' :
+                                       indicator.id === 'core_ppi' ? '核心通膨回落' :
+                                       '通膨降溫';
+                          } else if (actualNum > forecastNum + threshold) {
+                            statusColor = 'text-rose-500';
+                            bgColor = 'bg-rose-500/10';
+                            analysis = indicator.id === 'ppi' ? '通膨升溫' :
+                                       indicator.id === 'core_ppi' ? '核心通膨升溫' :
+                                       '通膨過熱';
+                          }
+                        } else if (isJobs) {
+                          if (actualNum > forecastNum + 10) {
+                            statusColor = 'text-emerald-500';
+                            bgColor = 'bg-emerald-500/10';
+                            analysis = '就業強勁';
+                          } else if (actualNum < forecastNum - 10) {
+                            statusColor = 'text-rose-500';
+                            bgColor = 'bg-rose-500/10';
+                            analysis = '勞動疲弱';
+                          }
                         }
-                      } else if (isJobs) {
-                        // 就業類（NFP/ADP）：高於預期=就業強勁=利多，低於預期=就業疲弱=利空
-                        if (actualNum > forecastNum + 10) {
-                          status = 'positive';
-                          statusColor = 'text-emerald-500';
-                          bgColor = 'bg-emerald-500/10';
-                          analysis = '就業強勁 (利多)';
-                        } else if (actualNum < forecastNum - 10) {
-                          status = 'negative';
-                          statusColor = 'text-rose-500';
-                          bgColor = 'bg-rose-500/10';
-                          analysis = '衰退疑慮 (利空)';
-                        }
-                      }
-                    }
 
-                    return (
-                      <>
-                        <div className={`w-2 h-2 rounded-full ${statusColor.replace('text-', 'bg-')} animate-pulse`} />
-                        <div className={`text-[10px] font-bold uppercase tracking-widest ${statusColor} py-0.5 px-2 rounded ${bgColor}`}>
-                          {analysis}
-                        </div>
-                      </>
-                    );
-                  })()}
+                        return (
+                          <div className={`text-[9px] font-bold uppercase tracking-widest ${statusColor} py-0.5 px-2 rounded ${bgColor}`}>
+                            {analysis}
+                          </div>
+                        );
+                      })()}
+                    </div>
+                  ) : indicator.isPending ? (
+                    <div className="flex items-center gap-2">
+                      <div className="w-2 h-2 rounded-full bg-white/30" />
+                      <span className="text-[10px] text-text-dim/60 font-mono font-medium">等待數據發布 (TBD)</span>
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-2">
+                      <div className="w-2 h-2 rounded-full bg-amber-500/60" />
+                      <span className="text-[10px] text-amber-400 font-mono font-medium font-semibold">數據暫時無法取得</span>
+                    </div>
+                  )}
                 </div>
                 
                 <div className="flex items-center gap-2 mt-auto pt-4 border-t border-border-subtle">

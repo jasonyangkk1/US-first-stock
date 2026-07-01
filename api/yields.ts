@@ -1,7 +1,29 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 
-const FRED_API_KEY = process.env.FRED_API_KEY;
+const FRED_API_KEY = process.env.FRED_API_KEY ? process.env.FRED_API_KEY.trim().replace(/^['"]|['"]$/g, '') : undefined;
 const FRED_BASE_URL = 'https://api.stlouisfed.org/fred/series/observations';
+
+async function fetchWithTimeout(url: string, timeoutMs = 8000) {
+  let timeoutId: any = null;
+  let signal: AbortSignal | undefined = undefined;
+
+  if (typeof AbortController !== 'undefined') {
+    const controller = new AbortController();
+    signal = controller.signal;
+    timeoutId = setTimeout(() => {
+      controller.abort();
+    }, timeoutMs);
+  }
+
+  try {
+    const response = await fetch(url, { signal });
+    if (timeoutId) clearTimeout(timeoutId);
+    return response;
+  } catch (err) {
+    if (timeoutId) clearTimeout(timeoutId);
+    throw err;
+  }
+}
 
 interface HistoricalContext {
   period: string;
@@ -232,28 +254,42 @@ function sampleMonthlyLast(
 async function fetchFredHistory(
   seriesId: string, 
   monthsBack: number,
-  frequency: 'm' | 'd' = 'm'
+  frequency: 'm' | 'd' = 'm',
+  retries = 2
 ): Promise<Array<{ value: number; date: string }>> {
   if (!FRED_API_KEY) return [];
-  try {
-    const startDate = new Date();
-    startDate.setMonth(startDate.getMonth() - monthsBack);
-    const observationStart = startDate.toISOString().split('T')[0];
-    
-    // Add &frequency=m to drastically reduce payload size (240 monthly rows vs 5000+ daily rows)
-    const url = `${FRED_BASE_URL}?series_id=${seriesId}&api_key=${FRED_API_KEY}&file_type=json&sort_order=asc&observation_start=${observationStart}&frequency=${frequency}&aggregation_method=eop`;
-    const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
-    if (!res.ok) return [];
-    const data: any = await res.json();
-    const monthly = (data.observations || [])
-      .filter((o: any) => o.value !== '.')
-      .map((o: any) => ({ value: Number(o.value), date: o.date }));
-    
-    return monthly;
-  } catch (e) {
-    console.error(`[yields] History fetch failed for ${seriesId}:`, e);
-    return [];
+  const startDate = new Date();
+  startDate.setMonth(startDate.getMonth() - monthsBack);
+  const observationStart = startDate.toISOString().split('T')[0];
+  const url = `${FRED_BASE_URL}?series_id=${seriesId}&api_key=${FRED_API_KEY}&file_type=json&sort_order=asc&observation_start=${observationStart}&frequency=${frequency}&aggregation_method=eop`;
+
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      const res = await fetchWithTimeout(url, 6000);
+      if (res.status === 429) {
+        console.warn(`[yields] Rate limited for history ${seriesId}, attempt ${attempt + 1}/${retries + 1}`);
+        const delayMs = Math.pow(2, attempt) * 1000 + Math.random() * 500;
+        await new Promise(resolve => setTimeout(resolve, delayMs));
+        continue;
+      }
+      if (!res.ok) return [];
+      const data: any = await res.json();
+      const monthly = (data.observations || [])
+        .filter((o: any) => o.value !== '.')
+        .map((o: any) => ({ value: Number(o.value), date: o.date }));
+      
+      return monthly;
+    } catch (e) {
+      console.error(`[yields] History fetch failed for ${seriesId} on try ${attempt + 1}:`, e);
+      if (attempt < retries) {
+        const delayMs = Math.pow(2, attempt) * 1000 + Math.random() * 500;
+        await new Promise(resolve => setTimeout(resolve, delayMs));
+        continue;
+      }
+      return [];
+    }
   }
+  return [];
 }
 
 function getAbsoluteLevel(yield10y: number): { level: YieldData['absoluteLevel']; note: string } {
@@ -339,7 +375,7 @@ async function fetchFredSeries(seriesId: string, retries = 2): Promise<{ value: 
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
       const url = `${FRED_BASE_URL}?series_id=${seriesId}&api_key=${FRED_API_KEY}&file_type=json&sort_order=desc&limit=10`;
-      const res = await fetch(url, { signal: AbortSignal.timeout(6000) }); // Reduced timeout to 6 seconds
+      const res = await fetchWithTimeout(url, 6000); // Reduced timeout to 6 seconds
       
       if (res.status === 429) {
         // Rate limit: backoff and retry
@@ -383,11 +419,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   try {
+    const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
     // === Layer 1: Core yields data (DGS2, DGS10, DGS30) - Must succeed, use retrying fetch ===
     const [y2, y10, y30] = await Promise.all([
       fetchFredSeries('DGS2'),
-      fetchFredSeries('DGS10'),
-      fetchFredSeries('DGS30'),
+      delay(200).then(() => fetchFredSeries('DGS10')),
+      delay(400).then(() => fetchFredSeries('DGS30')),
     ]);
 
     if (!y2 || !y10) {
@@ -401,10 +438,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     // === Layer 2: Historical datasets - Failsafe fetching with Promise.allSettled ===
     const [histResult, chart2yResult, chart10yResult, chart30yResult] = await Promise.allSettled([
-      fetchFredHistory('DGS10', 240, 'm'),
-      fetchFredHistory('DGS2', 24, 'm'),
-      fetchFredHistory('DGS10', 24, 'm'),
-      fetchFredHistory('DGS30', 24, 'm')
+      delay(600).then(() => fetchFredHistory('DGS10', 240, 'm')),
+      delay(800).then(() => fetchFredHistory('DGS2', 24, 'm')),
+      delay(1000).then(() => fetchFredHistory('DGS10', 24, 'm')),
+      delay(1200).then(() => fetchFredHistory('DGS30', 24, 'm'))
     ]);
 
     const history20y = histResult.status === 'fulfilled' ? histResult.value : [];

@@ -53,8 +53,8 @@ export default function EarningsTracker({ onSelectStock }: { onSelectStock?: (sy
         });
       } catch (e) {
         console.warn('Backend bulk fetch failed, using frontend logic/fallbacks', e);
-        // If backend fails, we could try individual fetches or just return empty
-        // For robustness, let's just use the individual fetch logic below which has fallbacks
+        // Clean fallback for bulk request
+        return symbols.map(s => getFallbackFor(s));
       }
     }
 

@@ -4,16 +4,37 @@ import { yahooFinance } from './_helpers.js';
 
 const CNN_URL = 'https://production.dataviz.cnn.io/index/fearandgreed/graphdata';
 
+async function fetchWithTimeout(url: string, init?: RequestInit, timeoutMs = 5000) {
+  let timeoutId: any = null;
+  let signal: AbortSignal | undefined = undefined;
+
+  if (typeof AbortController !== 'undefined') {
+    const controller = new AbortController();
+    signal = controller.signal;
+    timeoutId = setTimeout(() => {
+      controller.abort();
+    }, timeoutMs);
+  }
+
+  try {
+    const response = await fetch(url, { ...init, signal: signal ?? init?.signal });
+    if (timeoutId) clearTimeout(timeoutId);
+    return response;
+  } catch (err) {
+    if (timeoutId) clearTimeout(timeoutId);
+    throw err;
+  }
+}
+
 async function getCNNData() {
   try {
-    const res = await fetch(CNN_URL, {
+    const res = await fetchWithTimeout(CNN_URL, {
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
         'Referer': 'https://www.cnn.com/markets/fear-and-greed',
         'Accept': 'application/json'
-      },
-      signal: AbortSignal.timeout(5000)
-    });
+      }
+    }, 5000);
     
     if (res.ok) {
       const data: any = await res.json();
