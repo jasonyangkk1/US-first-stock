@@ -231,6 +231,43 @@ const formatFomcRange = (meeting: any): string => {
   }
 };
 
+const VIXEQ_ZONES = [
+  { min: 0,  max: 30, label: '極度樂觀',  labelEn: 'Extreme Optimism', color: 'text-emerald-400', bg: 'bg-emerald-400', desc: '個股財報季基本安全，市場缺乏對單股特有風險的防範，常見於牛市中段。' },
+  { min: 30, max: 38, label: '常態健康',  labelEn: 'Normal',           color: 'text-blue-400',    bg: 'bg-blue-400',    desc: '市場常態基準線，個股波動適度，多空博弈處於均衡狀態。' },
+  { min: 38, max: 45, label: '偏高警戒',  labelEn: 'Elevated',         color: 'text-yellow-400',  bg: 'bg-yellow-400',  desc: '市場對 AI 巨頭、半導體股的財報或資本支出回報率（ROI）產生疑慮，單股期權避險成本顯著轉貴。' },
+  { min: 45, max: 999,label: '極度恐懼',  labelEn: 'Extreme Fear',     color: 'text-rose-400',    bg: 'bg-rose-400',    desc: '歷史極端高位。通常伴隨主流權值股集體暴雷，或日圓套利平倉引發的個股系統性無差別拋售。' },
+];
+
+function getVixeqZone(value: number | null | undefined) {
+  if (value == null || isNaN(value)) return VIXEQ_ZONES[1]; // 預設返回「常態健康」
+  return VIXEQ_ZONES.find(z => value >= z.min && value < z.max) ?? VIXEQ_ZONES[VIXEQ_ZONES.length - 1];
+}
+
+const DISPERSION_ZONES = [
+  { maxSpread: 10,  signal: '樂觀/自滿',   signalEn: 'Complacency',    color: 'text-emerald-400', icon: '🟢',
+    desc: '個股波動異常低，市場對單股風險毫無防備。資金集體抱團的牛市末期特徵，量化模型反而警惕大盤見頂。' },
+  { maxSpread: 20,  signal: '均衡/正常',   signalEn: 'Balanced',       color: 'text-blue-400',    icon: '⚖️',
+    desc: '個股波動與指數波動差距合理，市場整體均衡，無明顯的集體恐懼或貪婪。' },
+  { maxSpread: 999, signal: '恐懼/防禦',   signalEn: 'Defensive Mode', color: 'text-rose-400',    icon: '🔴',
+    desc: '個股隱含波動率遠高於指數，大型機構正在底層個股期權市場瘋狂買進保險（Put Options）鎖定利潤。表面平靜、暗潮洶湧。' },
+];
+
+function getDispersionSignal(vixeq: number | null | undefined, vix: number | null | undefined) {
+  const safeVixeq = vixeq ?? 40;
+  const safeVix = vix ?? 15;
+  const spread = safeVixeq - safeVix;
+  const zone = DISPERSION_ZONES.find(z => spread < z.maxSpread) ?? DISPERSION_ZONES[DISPERSION_ZONES.length - 1];
+  return { spread: parseFloat(spread.toFixed(2)), ...zone };
+}
+
+function estimateVixeq(vixValue: number): number {
+  if (vixValue < 15) return parseFloat((vixValue * 2.4).toFixed(2));
+  if (vixValue < 20) return parseFloat((vixValue * 2.6).toFixed(2));
+  if (vixValue < 25) return parseFloat((vixValue * 2.75).toFixed(2));
+  if (vixValue < 35) return parseFloat((vixValue * 2.9).toFixed(2));
+  return parseFloat((vixValue * 3.1).toFixed(2));
+}
+
 const WITCHING_INSIGHTS = [
   {
     icon: '📈',
@@ -260,6 +297,17 @@ const WITCHING_INSIGHTS = [
 
 export default function MarketSentiment() {
   const [sentiment, setSentiment] = useState<Sentiment | null>(null);
+
+  const vixeqEstimate = useMemo(() => {
+    const vixVal = sentiment?.vix?.value ?? 15;
+    const estimated = estimateVixeq(vixVal);
+    const change = sentiment?.vix?.change ?? 0; // VIXEQ 變化方向與 VIX 相同
+    return {
+      value: estimated,
+      change: parseFloat((change * 1.2).toFixed(2)), // VIXEQ 波動約為 VIX 的 1.2 倍
+      isEstimated: true
+    };
+  }, [sentiment?.vix?.value, sentiment?.vix?.change]);
   const [macroData, setMacroData] = useState<any>(null);
   const [yieldsData, setYieldsData] = useState<any>(null);
   const [breadthData, setBreadthData] = useState<any>(null);
@@ -919,6 +967,115 @@ export default function MarketSentiment() {
               {isVixHigh ? 'High Volatility Regime' : 'Low Volatility Regime'}
             </p>
           </div>
+        </section>
+
+        {/* VIXEQ Index */}
+        <section className="sleek-card p-6 overflow-hidden relative">
+          <div className="card-title absolute top-5 flex items-center gap-2">
+            <span>VIXEQ — 個股波動指數</span>
+            <span className="text-[8px] px-1.5 py-0.5 bg-amber-500/10 text-amber-400 border border-amber-500/20 rounded font-bold">
+              估算值 (VIX×係數)
+            </span>
+          </div>
+          
+          {sentiment ? (() => {
+            const vixeqVal = vixeqEstimate.value;
+            const vixVal = sentiment.vix?.value ?? 15;
+            const zone = getVixeqZone(vixeqVal);
+            const dispersion = getDispersionSignal(vixeqVal, vixVal);
+            const rawChange = vixeqEstimate.change;
+            
+            return (
+              <div className="mt-8 space-y-5">
+                {/* 主數值 */}
+                <div className="flex items-end gap-4">
+                  <div>
+                    <div className={`text-4xl font-light tracking-tighter ${zone?.color ?? 'text-text-bright'}`}>
+                      {vixeqVal.toFixed(2)}
+                    </div>
+                    <div className={`flex items-center gap-1 text-xs font-bold mt-1 ${
+                      (rawChange ?? 0) > 0 ? 'text-red-400' : 'text-emerald-400'
+                    }`}>
+                      {(rawChange ?? 0) > 0 ? <TrendingUp className="w-3 h-3" /> : <TrendingDown className="w-3 h-3" />}
+                      <span>{Math.abs(rawChange ?? 0).toFixed(2)}%</span>
+                    </div>
+                  </div>
+                  <div className="flex flex-col gap-1 pb-1">
+                    <span className={`text-[10px] font-bold uppercase tracking-widest ${zone?.color ?? 'text-text-dim'}`}>
+                      {zone?.label ?? 'N/A'}
+                    </span>
+                    <span className="text-[9px] text-text-dim">{zone?.labelEn ?? ''}</span>
+                  </div>
+                </div>
+                
+                {/* 波動區間進度條 */}
+                <div>
+                  <div className="flex justify-between text-[9px] text-text-dim/60 mb-1">
+                    <span>0 極度樂觀</span>
+                    <span>30</span>
+                    <span>38</span>
+                    <span>45+</span>
+                  </div>
+                  <div className="relative h-2 rounded-full bg-gradient-to-r from-emerald-500/40 via-blue-500/40 via-yellow-500/40 to-rose-500/40 overflow-hidden">
+                    <div
+                      className={`absolute top-0 left-0 h-full rounded-full ${zone?.bg ?? 'bg-border-subtle'} opacity-80`}
+                      style={{ width: `${Math.min(100, (vixeqVal / 60) * 100)}%` }}
+                    />
+                  </div>
+                  <div className="flex justify-between text-[9px] mt-1">
+                    <span className="text-emerald-400">安全</span>
+                    <span className="text-rose-400">恐懼</span>
+                  </div>
+                </div>
+                
+                {/* 情緒描述 */}
+                <p className="text-[11px] text-text-dim leading-relaxed">{zone?.desc ?? ''}</p>
+                
+                {/* 離散度溢價（VIXEQ - VIX）*/}
+                <div className="border-t border-border-subtle pt-4">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-[10px] font-bold text-text-dim uppercase tracking-widest">
+                      離散度溢價 (VIXEQ − VIX)
+                    </span>
+                    <span className={`text-sm font-mono font-bold ${dispersion?.color ?? 'text-text-bright'}`}>
+                      {(dispersion?.spread ?? 0) > 0 ? '+' : ''}{dispersion?.spread ?? 0}
+                    </span>
+                  </div>
+                  
+                  <div className={`p-3 rounded-xl border ${
+                    dispersion?.signal === '樂觀/自滿' ? 'bg-emerald-500/5 border-emerald-500/20' :
+                    dispersion?.signal === '恐懼/防禦' ? 'bg-rose-500/5 border-rose-500/20' :
+                    'bg-blue-500/5 border-blue-500/20'
+                  }`}>
+                    <div className="flex items-center gap-2 mb-1.5">
+                      <span className="text-sm">{dispersion?.icon ?? '⚖️'}</span>
+                      <span className={`text-xs font-bold ${dispersion?.color ?? 'text-text-dim'}`}>{dispersion?.signal ?? 'N/A'}</span>
+                      <span className="text-[9px] text-text-dim">({dispersion?.signalEn ?? ''})</span>
+                    </div>
+                    <p className="text-[10px] text-text-dim leading-relaxed">{dispersion?.desc ?? ''}</p>
+                  </div>
+                  
+                  {/* 差值參考線 */}
+                  <div className="flex justify-between text-[9px] text-text-dim/50 mt-2">
+                    <span>差值 &lt;10 → 自滿訊號</span>
+                    <span>差值 &gt;20 → 防禦訊號</span>
+                  </div>
+                </div>
+
+                {/* 說明文字 */}
+                <div className="mt-4 pt-3 border-t border-border-subtle/30">
+                  <p className="text-[9px] text-text-dim/40 leading-relaxed">
+                    * VIXEQ 估算值基於 VIX 歷史比值模型（VIXEQ ≈ VIX × 2.4~3.1，依波動環境調整）。
+                    Cboe VIXEQ 即時報價因 API 限制暫不提供，僅供方向性參考。
+                  </p>
+                </div>
+              </div>
+            );
+          })() : (
+            <div className="flex items-center justify-center h-40 text-text-dim/40 text-sm mt-4">
+              VIXEQ 數據載入中...
+            </div>
+          )}
         </section>
 
         {/* Treasury Yield Curve */}

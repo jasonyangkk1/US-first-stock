@@ -84,7 +84,7 @@ async function calculateSyntheticSentiment() {
 
     score = Math.round(vixScore + momScore + changeScore);
     score = Math.max(0, Math.min(100, score));
-
+    
     let label = 'neutral';
     if (score >= 75) label = 'extreme greed';
     else if (score >= 60) label = 'greed';
@@ -102,7 +102,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method === 'OPTIONS') return res.status(200).end();
 
   try {
-    const vixPromise = yahooFinance.quote('^VIX');
+    const vixPromise = yahooFinance.quote('^VIX').catch(() => null);
     // Try CNN first, then fallback
     const cnnDataPromise = getCNNData();
 
@@ -113,10 +113,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       fearAndGreed = await calculateSyntheticSentiment();
     }
 
+    const vixPrice = (vixQuote as any)?.regularMarketPrice ?? 15;
+    const vixChange = (vixQuote as any)?.regularMarketChangePercent ?? 0;
+
     res.json({
       vix: { 
-        value: vixQuote.regularMarketPrice, 
-        change: vixQuote.regularMarketChangePercent 
+        value: vixPrice, 
+        change: vixChange 
       },
       fearAndGreed: {
         ...fearAndGreed,
