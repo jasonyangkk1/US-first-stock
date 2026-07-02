@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { motion } from 'motion/react';
 import { Gauge, Activity, AlertCircle, RefreshCcw, TrendingDown, TrendingUp, Users, ShoppingBag, Clock, Calendar, BarChart3, AlertTriangle, Zap, Link, ArrowRight, Eye } from 'lucide-react';
 
@@ -151,6 +151,113 @@ const MiniSparkline: React.FC<SparklineProps> = ({ history, color = '#f97316', w
   );
 };
 
+function getTripleWitchingDates(year: number): Date[] {
+  // 每年 3、6、9、12 月的第三個週五
+  const months = [2, 5, 8, 11]; // 0-indexed
+  return months.map(month => {
+    const d = new Date(Date.UTC(year, month, 1));
+    let fridayCount = 0;
+    while (true) {
+      if (d.getUTCDay() === 5) {
+        fridayCount++;
+        if (fridayCount === 3) return new Date(d);
+      }
+      d.setUTCDate(d.getUTCDate() + 1);
+    }
+  });
+}
+
+function getNextTwoWitchingDates(): { prev: Date | null; next: Date; afterNext: Date | null } {
+  const now = new Date();
+  const thisYear = now.getUTCFullYear();
+  const allDates = [
+    ...getTripleWitchingDates(thisYear - 1),
+    ...getTripleWitchingDates(thisYear),
+    ...getTripleWitchingDates(thisYear + 1),
+  ].sort((a, b) => a.getTime() - b.getTime());
+  
+  // 找到最近的過去一個和未來兩個
+  const nowMs = now.getTime();
+  const futureIdx = allDates.findIndex(d => d.getTime() > nowMs);
+  
+  return {
+    prev: futureIdx > 0 ? allDates[futureIdx - 1] : null,
+    next: allDates[futureIdx],
+    afterNext: allDates[futureIdx + 1] || null,
+  };
+}
+
+const formatWitchingDate = (date: Date | null): string => {
+  if (!date) return 'N/A';
+  try {
+    const formatted = date.toLocaleDateString('zh-TW', { 
+      timeZone: 'Asia/Taipei', 
+      year: 'numeric', 
+      month: '2-digit', 
+      day: '2-digit' 
+    });
+    const dayOfWeek = date.toLocaleDateString('zh-TW', { 
+      timeZone: 'Asia/Taipei', 
+      weekday: 'short' 
+    });
+    return `${formatted.replace(/-/g, '/')}（${dayOfWeek}）`;
+  } catch (e) {
+    const y = date.getUTCFullYear();
+    const m = String(date.getUTCMonth() + 1).padStart(2, '0');
+    const d = String(date.getUTCDate()).padStart(2, '0');
+    const dayNames = ['週日', '週一', '週二', '週三', '週四', '週五', '週六'];
+    const dayName = dayNames[date.getUTCDay()];
+    return `${y}/${m}/${d}（${dayName}）`;
+  }
+};
+
+const formatFomcRange = (meeting: any): string => {
+  if (!meeting) return 'N/A';
+  try {
+    const opt = { timeZone: 'Asia/Taipei', year: 'numeric', month: '2-digit', day: '2-digit' } as const;
+    const startStr = meeting.start.toLocaleDateString('zh-TW', opt).replace(/-/g, '/');
+    const endStr = meeting.end.toLocaleDateString('zh-TW', { timeZone: 'Asia/Taipei', month: '2-digit', day: '2-digit' }).replace(/-/g, '/');
+    const dayOfWeek = meeting.end.toLocaleDateString('zh-TW', { timeZone: 'Asia/Taipei', weekday: 'short' });
+    return `${startStr} - ${endStr}（${dayOfWeek}）`;
+  } catch (e) {
+    const y = meeting.end.getUTCFullYear();
+    const sm = String(meeting.start.getUTCMonth() + 1).padStart(2, '0');
+    const sd = String(meeting.start.getUTCDate()).padStart(2, '0');
+    const em = String(meeting.end.getUTCMonth() + 1).padStart(2, '0');
+    const ed = String(meeting.end.getUTCDate()).padStart(2, '0');
+    const dayNames = ['週日', '週一', '週二', '週三', '週四', '週五', '週六'];
+    const dayName = dayNames[meeting.end.getUTCDay()];
+    return `${y}/${sm}/${sd} - ${em}/${ed}（${dayName}）`;
+  }
+};
+
+const WITCHING_INSIGHTS = [
+  {
+    icon: '📈',
+    title: '爆發性成交量',
+    subtitle: 'Volume Surge',
+    desc: '三巫日當天（特別是美東時間 15:00-16:00「巫術時刻」），成交量通常飆升至全年最高峰。伴隨歷史天量出現的價格突破或跌破，訊號真實性更高，是法人用真金白銀砸出的籌碼洗牌。',
+    signal: '量價配合 → 突破更可信',
+    signalColor: 'text-emerald-400'
+  },
+  {
+    icon: '🔄',
+    title: '趨勢轉折點',
+    subtitle: 'Potential Pivot',
+    desc: '三巫日前機構拉抬效應通常維持原有趨勢；但結算完成後的首個交易週，市場容易出現短期趨勢反轉。若結算前已集體超買（AI、半導體大漲），結算後避險買盤撤走，易引發估值修正。',
+    signal: '結算後首週 → 留意反轉',
+    signalColor: 'text-yellow-400'
+  },
+  {
+    icon: '📉',
+    title: 'VIX 與最大痛點',
+    subtitle: 'Max Pain & VIX Spike',
+    desc: '三巫日前夕隱含波動率（VIX）通常被放大。觀測期貨現貨價差（Basis）與選擇權未平倉量（OI）分佈，可找出市場集體押注的「最大痛點（Max Pain）」，這通常是當天結算的強力支撐或壓力位。',
+    signal: 'OI 最大值 → 結算磁吸點',
+    signalColor: 'text-blue-400'
+  }
+];
+
 export default function MarketSentiment() {
   const [sentiment, setSentiment] = useState<Sentiment | null>(null);
   const [macroData, setMacroData] = useState<any>(null);
@@ -169,6 +276,92 @@ export default function MarketSentiment() {
   const [yieldsError, setYieldsError] = useState<string | null>(null);
   const [error, setError] = useState(false);
   const [cookieBlocked, setCookieBlocked] = useState(false);
+
+  const witchingInfo = useMemo(() => {
+    const info = getNextTwoWitchingDates();
+    const daysUntil = Math.ceil((info.next.getTime() - Date.now()) / 86400000);
+    return { 
+      ...info, 
+      daysUntilNext: daysUntil, 
+      isWitchingWeek: daysUntil <= 7 && daysUntil >= 0, 
+      isWitchingDay: daysUntil === 0 
+    };
+  }, []);
+
+  const FOMC_MEETINGS_2026 = useMemo(() => [
+    // 已過的（前半年）
+    { start: new Date('2026-01-27'), end: new Date('2026-01-28'), hasDotPlot: false },
+    { start: new Date('2026-03-17'), end: new Date('2026-03-18'), hasDotPlot: true },
+    { start: new Date('2026-04-28'), end: new Date('2026-04-29'), hasDotPlot: false },
+    { start: new Date('2026-06-09'), end: new Date('2026-06-10'), hasDotPlot: true },
+    // 下半年
+    { start: new Date('2026-07-28'), end: new Date('2026-07-29'), hasDotPlot: false },
+    { start: new Date('2026-09-15'), end: new Date('2026-09-16'), hasDotPlot: true },   // 含點陣圖
+    { start: new Date('2026-10-27'), end: new Date('2026-10-28'), hasDotPlot: false },
+    { start: new Date('2026-12-08'), end: new Date('2026-12-09'), hasDotPlot: true },   // 含點陣圖
+  ], []);
+
+  const FOMC_SCENARIOS = useMemo(() => [
+    {
+      icon: '🛑',
+      action: '升息 / 維持高位',
+      subtitle: 'Rate Hike / Higher for Longer',
+      bgClass: 'bg-rose-500/5 border-rose-500/20',
+      titleClass: 'text-rose-400',
+      trigger: 'CPI 彈升、就業過熱、通膨預期脫錨',
+      mechanism: '基準利率↑ → 借貸成本↑ → 消費投資放緩 → 經濟冷卻',
+      marketImpact: '美債殖利率攀升、美元轉強；高本益比科技股、AI 資本支出回報期長的企業面臨估值修正壓力',
+      currentRelevance: '⚠️ 2026年中 CPI 再度走高，市場高度警惕「Higher for Longer」鷹派訊號'
+    },
+    {
+      icon: '🟢',
+      action: '降息',
+      subtitle: 'Rate Cut',
+      bgClass: 'bg-emerald-500/5 border-emerald-500/20',
+      titleClass: 'text-emerald-400',
+      trigger: '通膨降回 2% 目標、失業率異常上升、衰退訊號出現',
+      mechanism: '基準利率↓ → 釋放流動性 → 鼓勵借貸投資 → 刺激增長',
+      marketImpact: '風險資產估值擴張（Re-rating）；但若因衰退被迫降息，反而引發市場恐慌，「壞消息是壞消息」',
+      currentRelevance: '📊 需觀察 NFP 就業與 PCE 通膨數據，判斷 Fed 降息空間'
+    },
+    {
+      icon: '🔍',
+      action: '維持不變（鴿鷹信號）',
+      subtitle: 'Hold + Forward Guidance',
+      bgClass: 'bg-blue-500/5 border-blue-500/20',
+      titleClass: 'text-blue-400',
+      trigger: '數據混沌期、等待更多數據確認',
+      mechanism: '利率不動，但 Powell 記者會的措辭（鷹派/鴿派）才是真正的市場驅動器',
+      marketImpact: '點陣圖中位數若上移（升息預期）→ 長債殖利率大漲；若下移（降息預期）→ 股市反彈',
+      currentRelevance: '💡 9月與12月附帶點陣圖，是觀測長線資金流向的最高級風向球'
+    }
+  ], []);
+
+  const fomcInfo = useMemo(() => {
+    const now = new Date();
+    const meetings = FOMC_MEETINGS_2026;
+    
+    // 找下一次會議（end 日期 + 14:00 ET = UTC 18:00 之後）
+    const nextIdx = meetings.findIndex(m => {
+      const decisionTime = new Date(m.end.getTime() + 18 * 3600000); // UTC 18:00
+      return decisionTime > now;
+    });
+    
+    const next = nextIdx >= 0 ? meetings[nextIdx] : null;
+    const prev = nextIdx > 0 ? meetings[nextIdx - 1] : (nextIdx === -1 && meetings.length > 0 ? meetings[meetings.length - 1] : null);
+    const remaining = nextIdx >= 0 ? meetings.slice(nextIdx) : [];
+    
+    // 距下次決策公布的天數
+    const decisionTime = next ? new Date(next.end.getTime() + 18 * 3600000) : null;
+    const daysUntil = decisionTime 
+      ? Math.ceil((decisionTime.getTime() - now.getTime()) / 86400000)
+      : null;
+    
+    const isMeetingWeek = daysUntil !== null && daysUntil <= 7 && daysUntil >= 0;
+    const isMeetingDay = daysUntil !== null && daysUntil <= 1 && daysUntil >= 0;
+    
+    return { next, prev, remaining, daysUntil, isMeetingWeek, isMeetingDay };
+  }, [FOMC_MEETINGS_2026]);
 
   const fetchYields = React.useCallback(async () => {
     setYieldsLoading(true);
@@ -1354,6 +1547,293 @@ export default function MarketSentiment() {
               數據載入中...
             </div>
           )}
+        </section>
+
+        {/* Triple Witching Section */}
+        <section className="sleek-card md:col-span-2 p-6 overflow-hidden relative animate-fade-in">
+          <div className="flex items-center justify-between mb-6">
+            <div className="card-title m-0 flex items-center gap-2">
+              <span>🧙 三巫日 (TRIPLE WITCHING)</span>
+            </div>
+            {witchingInfo.isWitchingDay ? (
+              <span className="text-rose-400 text-xs font-bold animate-pulse">🧙 今日即三巫日！</span>
+            ) : witchingInfo.isWitchingWeek ? (
+              <span className="text-orange-400 text-xs font-bold animate-pulse">⚡ 三巫週！距今 {witchingInfo.daysUntilNext} 天</span>
+            ) : witchingInfo.daysUntilNext >= 7 && witchingInfo.daysUntilNext <= 14 ? (
+              <span className="text-yellow-400 text-xs font-bold">接近三巫日！距今 {witchingInfo.daysUntilNext} 天</span>
+            ) : (
+              <span className="text-text-dim text-xs">距下次 {witchingInfo.daysUntilNext} 天</span>
+            )}
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-6">
+            {/* 上次三巫日 */}
+            <div className="p-4 bg-card-bg/40 rounded-xl border border-border-subtle/50 relative overflow-hidden group">
+              <div className="text-[10px] text-text-dim/60 uppercase font-bold tracking-widest mb-1">上次三巫日 (Last Q)</div>
+              <h4 className="text-base font-bold text-text-dim/80 font-mono">
+                {formatWitchingDate(witchingInfo.prev)}
+              </h4>
+              <p className="text-xs text-text-dim/50 mt-1 flex items-center gap-1">
+                <span className="w-1.5 h-1.5 rounded-full bg-text-dim/40" />
+                已結算 (Settled)
+              </p>
+            </div>
+
+            {/* 下次三巫日 */}
+            <div className={`p-4 rounded-xl border relative overflow-hidden group ${
+              witchingInfo.isWitchingDay 
+                ? 'bg-rose-500/5 border-rose-500/30' 
+                : witchingInfo.isWitchingWeek 
+                  ? 'bg-orange-500/5 border-orange-500/30'
+                  : witchingInfo.daysUntilNext >= 7 && witchingInfo.daysUntilNext <= 14
+                    ? 'bg-yellow-500/5 border-yellow-500/30'
+                    : 'bg-brand/5 border-brand/20'
+            }`}>
+              <div className="flex justify-between items-start">
+                <div>
+                  <div className="text-[10px] text-brand/80 uppercase font-bold tracking-widest mb-1 flex items-center gap-1">
+                    <span>下次三巫日 (Next Q)</span>
+                    <span className="animate-bounce">◀━━</span>
+                  </div>
+                  <h4 className={`text-base font-bold font-mono ${
+                    witchingInfo.isWitchingDay 
+                      ? 'text-rose-400' 
+                      : witchingInfo.isWitchingWeek 
+                        ? 'text-orange-400'
+                        : witchingInfo.daysUntilNext >= 7 && witchingInfo.daysUntilNext <= 14
+                          ? 'text-yellow-400'
+                          : 'text-brand'
+                  }`}>
+                    {formatWitchingDate(witchingInfo.next)}
+                  </h4>
+                  <p className="text-xs text-text-dim mt-1">
+                    {witchingInfo.isWitchingDay ? (
+                      <span className="text-rose-400 font-bold">今日即將結算中！</span>
+                    ) : (
+                      <span>距今 <strong className="font-mono">{witchingInfo.daysUntilNext}</strong> 天</span>
+                    )}
+                  </p>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* 三個觀測指標 */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            {WITCHING_INSIGHTS.map((insight, i) => (
+              <div key={i} className="p-4 bg-card-bg/50 rounded-xl border border-border-subtle">
+                <div className="flex items-center gap-2 mb-2">
+                  <span className="text-lg">{insight.icon}</span>
+                  <div>
+                    <span className="text-xs font-bold text-text-bright">{insight.title}</span>
+                    <span className="text-[9px] text-text-dim ml-2 uppercase tracking-wider">{insight.subtitle}</span>
+                  </div>
+                </div>
+                <p className="text-[11px] text-text-dim leading-relaxed mb-2">{insight.desc}</p>
+                <div className="flex items-center gap-1.5">
+                  <div className="w-1 h-1 rounded-full bg-current" />
+                  <span className={`text-[10px] font-bold ${insight.signalColor}`}>{insight.signal}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {/* 量化提醒 */}
+          <div className="mt-4 p-4 bg-amber-500/5 border border-amber-500/20 rounded-xl">
+            <p className="text-[10px] font-bold text-amber-400 uppercase tracking-widest mb-2">🛠️ 量化交易提醒</p>
+            <div className="space-y-1.5">
+              <p className="text-[11px] text-text-dim leading-relaxed">
+                <span className="text-amber-400 font-bold">① 避開巫術時刻甩尾：</span>
+                結算當天下午程式交易引發瞬間流動性真空與滑價，不宜盲目進出場。
+              </p>
+              <p className="text-[11px] text-text-dim leading-relaxed">
+                <span className="text-amber-400 font-bold">② 觀察結算後籌碼動向：</span>
+                三巫日後新開倉的季度合約，法人資金流入哪些板塊，才是決定下一季漲跌的真正風向球。
+              </p>
+            </div>
+          </div>
+        </section>
+
+        {/* FOMC Meetings Section */}
+        <section className="sleek-card md:col-span-2 p-6 overflow-hidden relative animate-fade-in">
+          <div className="flex items-center justify-between mb-6">
+            <div className="card-title m-0 flex flex-col sm:flex-row sm:items-center gap-1 sm:gap-2">
+              <span>🏛️ FOMC 會議 (聯準會利率決策)</span>
+              <span className="text-[10px] text-text-dim/60 font-normal normal-case">Federal Open Market Committee</span>
+            </div>
+            {fomcInfo.isMeetingDay ? (
+              <span className="text-rose-400 text-xs font-bold animate-pulse">🏛️ 今日公佈利率決策！</span>
+            ) : fomcInfo.isMeetingWeek ? (
+              <span className="text-orange-400 text-xs font-bold animate-pulse">⚡ FOMC 會議週！距今 {fomcInfo.daysUntil} 天</span>
+            ) : fomcInfo.daysUntil !== null && fomcInfo.daysUntil >= 7 && fomcInfo.daysUntil <= 14 ? (
+              <span className="text-yellow-400 text-xs font-bold">接近 FOMC 會議！距今 {fomcInfo.daysUntil} 天</span>
+            ) : (
+              <span className="text-text-dim text-xs">距下次決策 {fomcInfo.daysUntil} 天</span>
+            )}
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-6">
+            {/* 上次會議 (Last) */}
+            <div className="p-4 bg-card-bg/40 rounded-xl border border-border-subtle/50 relative overflow-hidden group">
+              <div className="text-[10px] text-text-dim/60 uppercase font-bold tracking-widest mb-1">上次會議 (Last)</div>
+              <h4 className="text-base font-bold text-text-dim/80 font-mono">
+                {formatFomcRange(fomcInfo.prev)}
+              </h4>
+              <p className="text-xs text-text-dim/50 mt-1.5 flex items-center gap-1.5 flex-wrap">
+                <span className="w-1.5 h-1.5 rounded-full bg-text-dim/40" />
+                <span>{fomcInfo.prev?.hasDotPlot ? '⭐ 含點陣圖 (Dot Plot)' : '無點陣圖'}</span>
+                <span className="text-[10px] bg-text-dim/10 text-text-dim/80 px-1.5 py-0.5 rounded font-medium">利率已宣布</span>
+              </p>
+            </div>
+
+            {/* 下次會議 (Next) */}
+            <div className={`p-4 rounded-xl border relative overflow-hidden group ${
+              fomcInfo.isMeetingDay 
+                ? 'bg-rose-500/5 border-rose-500/30' 
+                : fomcInfo.isMeetingWeek 
+                  ? 'bg-orange-500/5 border-orange-500/30'
+                  : fomcInfo.daysUntil !== null && fomcInfo.daysUntil >= 7 && fomcInfo.daysUntil <= 14
+                    ? 'bg-yellow-500/5 border-yellow-500/30'
+                    : 'bg-brand/5 border-brand/20'
+            }`}>
+              <div className="text-[10px] text-brand/80 uppercase font-bold tracking-widest mb-1 flex items-center gap-1">
+                <span>下次會議 (Next)</span>
+                <span className="animate-bounce">◀━━</span>
+              </div>
+              <h4 className={`text-base font-bold font-mono ${
+                fomcInfo.isMeetingDay 
+                  ? 'text-rose-400' 
+                  : fomcInfo.isMeetingWeek 
+                    ? 'text-orange-400'
+                    : fomcInfo.daysUntil !== null && fomcInfo.daysUntil >= 7 && fomcInfo.daysUntil <= 14
+                      ? 'text-yellow-400'
+                      : 'text-brand'
+              }`}>
+                {formatFomcRange(fomcInfo.next)}
+              </h4>
+              <div className="flex items-center gap-1.5 mt-1.5 flex-wrap">
+                {fomcInfo.next?.hasDotPlot && (
+                  <span className="text-[9px] px-1.5 py-0.5 bg-amber-500/10 text-amber-400 border border-amber-500/30 rounded font-bold">
+                    ⭐ 含點陣圖 (Dot Plot)
+                  </span>
+                )}
+                <span className="text-xs text-text-dim">
+                  {fomcInfo.isMeetingDay ? (
+                    <span className="text-rose-400 font-bold">決策今日公布！</span>
+                  ) : (
+                    <span>距今 <strong className="font-mono">{fomcInfo.daysUntil}</strong> 天</span>
+                  )}
+                </span>
+              </div>
+            </div>
+          </div>
+
+          {/* 2026 下半年完整時程表 */}
+          <div className="mb-6 bg-card-bg/25 border border-border-subtle/40 rounded-xl p-4">
+            <div className="text-xs font-bold text-text-bright mb-3 flex items-center justify-between">
+              <span>📅 2026 下半年會議時程 (2026 H2 Schedule)</span>
+              <span className="text-[10px] text-text-dim font-normal">* 2026 FOMC 時程，數據每年更新</span>
+            </div>
+            <div className="space-y-1">
+              {fomcInfo.remaining.map((meeting, i) => {
+                const isPast = meeting.end < new Date();
+                const isNext = i === 0;
+                const decisionDate = new Date(meeting.end.getTime() + 18 * 3600000);
+                
+                return (
+                  <div key={i} className={`flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3 py-2.5 border-b border-border-subtle/20 last:border-0 ${isNext ? 'bg-brand/5 -mx-2 px-2 rounded-lg' : ''}`}>
+                    <div className="flex items-center gap-2">
+                      {/* 時間線圓點 */}
+                      <div className={`w-2 h-2 rounded-full flex-shrink-0 ${
+                        isPast ? 'bg-text-dim/30' : 
+                        isNext ? 'bg-brand animate-pulse' : 
+                        'bg-border-subtle'
+                      }`} />
+                      
+                      {/* 日期 */}
+                      <div className="w-32 flex-shrink-0">
+                        <span className={`text-xs font-mono ${isNext ? 'text-text-bright font-bold' : 'text-text-dim'}`}>
+                          {meeting.start.toLocaleDateString('zh-TW', { timeZone: 'Asia/Taipei', month: 'numeric', day: 'numeric' })} - {meeting.end.toLocaleDateString('zh-TW', { timeZone: 'Asia/Taipei', month: 'numeric', day: 'numeric' })}
+                        </span>
+                      </div>
+                    </div>
+                    
+                    {/* 決策公布時間 */}
+                    <div className="flex-1 pl-4 sm:pl-0">
+                      <span className={`text-[10px] ${isNext ? 'text-text-secondary font-medium' : 'text-text-dim/60'}`}>
+                        決策公布：{decisionDate.toLocaleDateString('zh-TW', { timeZone: 'Asia/Taipei', month: 'numeric', day: 'numeric' })} 台灣時間 凌晨 2:00
+                      </span>
+                    </div>
+                    
+                    {/* 標籤 */}
+                    <div className="flex items-center gap-1.5 pl-4 sm:pl-0">
+                      {meeting.hasDotPlot && (
+                        <span className="text-[9px] px-1.5 py-0.5 bg-amber-500/10 text-amber-400 border border-amber-500/30 rounded font-bold flex-shrink-0">
+                          ⭐ 點陣圖
+                        </span>
+                      )}
+                      
+                      {isNext && (
+                        <span className="text-[9px] px-1.5 py-0.5 bg-brand/10 text-brand border border-brand/30 rounded font-bold flex-shrink-0">
+                          下一次
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* 三種利率決策的意義說明卡片 */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+            {FOMC_SCENARIOS.map((scenario, i) => (
+              <div key={i} className={`p-4 rounded-xl border ${scenario.bgClass}`}>
+                <div className="flex items-center gap-2 mb-3">
+                  <span className="text-xl">{scenario.icon}</span>
+                  <div>
+                    <span className={`text-xs font-bold ${scenario.titleClass}`}>{scenario.action}</span>
+                    <span className="text-[9px] text-text-dim ml-2 uppercase">{scenario.subtitle}</span>
+                  </div>
+                </div>
+                <div className="space-y-1.5">
+                  <p className="text-[10px] text-text-dim/70 leading-relaxed">
+                    <span className="text-text-secondary font-bold">觸發：</span>{scenario.trigger}
+                  </p>
+                  <p className="text-[10px] text-text-dim/70 leading-relaxed">
+                    <span className="text-text-secondary font-bold">機制：</span>{scenario.mechanism}
+                  </p>
+                  <p className="text-[10px] text-text-dim/70 leading-relaxed">
+                    <span className="text-text-secondary font-bold">市場：</span>{scenario.marketImpact}
+                  </p>
+                  <div className="mt-2 pt-2 border-t border-border-subtle/30">
+                    <p className={`text-[10px] leading-relaxed ${scenario.titleClass}`}>{scenario.currentRelevance}</p>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {/* 底部量化提醒 */}
+          <div className="p-4 bg-blue-500/5 border border-blue-500/20 rounded-xl">
+            <p className="text-[10px] font-bold text-blue-400 uppercase tracking-widest mb-2">
+              💡 量化交易觀察重點
+            </p>
+            <div className="space-y-1.5">
+              <p className="text-[11px] text-text-dim leading-relaxed">
+                <span className="text-blue-400 font-bold">① 會議前 48 小時：</span>
+                避免大倉位進出，Fed 官員進入「噤聲期（Blackout Period）」，市場流動性通常下降，波動加劇。
+              </p>
+              <p className="text-[11px] text-text-dim leading-relaxed">
+                <span className="text-blue-400 font-bold">② 決策後 Powell 記者會：</span>
+                官方聲明只是開場，記者會的措辭（如「適當的時機」、「數據依存」）才是真正移動市場的催化劑。
+              </p>
+              <p className="text-[11px] text-text-dim leading-relaxed">
+                <span className="text-blue-400 font-bold">③ 點陣圖解讀：</span>
+                關注中位數利率預測的變動方向，以及 2026/2027 年官員預測的分散程度（越分散代表不確定性越高）。
+              </p>
+            </div>
+          </div>
         </section>
       </div>
 
