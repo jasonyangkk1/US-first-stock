@@ -5,7 +5,7 @@ const FRED_BASE_URL = 'https://api.stlouisfed.org/fred/series/observations';
 
 const SERIES = {
   NFP: 'PAYEMS',
-  ADP: 'ADPWNUSNERSA',
+  ADP: 'ADPMNUSNERSA',
   CPI: 'CPIAUCSL',
   PPI: 'WPSFD49207',
   CORE_PPI: 'WPSFD4111',
@@ -258,7 +258,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   // Parallel fetch using Promise.allSettled, but spreading them out to avoid FRED burst 429 rate limit
   const [nfpResult, adpResult, cpiResult, ppiResult, corePpiResult, ppiFallbackResult, corePpiFallbackResult] = await Promise.allSettled([
     fetchFred(SERIES.NFP, 6),
-    delay(200).then(() => fetchFred(SERIES.ADP, 6)),
+    delay(200).then(() => fetchFred(SERIES.ADP, 4)),
     delay(400).then(() => fetchFred(SERIES.CPI, 20)),
     delay(600).then(() => fetchFred(SERIES.PPI, 20)),
     delay(800).then(() => fetchFred(SERIES.CORE_PPI, 20)),
@@ -356,17 +356,23 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       lastUpdated: new Date().toISOString()
     },
     adp: {
-      actual: (adpData && adpData.length >= 1) ? (
-        validateRange(adpData[0].value, -500, 1000) 
-          ? `${Math.round(adpData[0].value)}K` : null
-      ) : null,
-      previous: (adpData && adpData.length >= 2) ? (
-        validateRange(adpData[1].value, -500, 1000) 
-          ? `${Math.round(adpData[1].value)}K` : null
-      ) : null,
+      actual: (adpData && adpData.length >= 2) ? (() => {
+        const deltaPersons = adpData[0].value - adpData[1].value;
+        const deltaK = deltaPersons / 1000;
+        return validateRange(deltaK, -500, 1000)
+          ? `${Math.round(deltaK)}K`
+          : null;
+      })() : null,
+      previous: (adpData && adpData.length >= 3) ? (() => {
+        const deltaPersons = adpData[1].value - adpData[2].value;
+        const deltaK = deltaPersons / 1000;
+        return validateRange(deltaK, -500, 1000)
+          ? `${Math.round(deltaK)}K`
+          : null;
+      })() : null,
       forecast: "130K",
       forecastSource: "市場共識",
-      forecastAsOf: "2026-06",
+      forecastAsOf: "2026-07",
       nextRelease: dates.adp,
       pendingRelease: adpReleasePending,
       pendingReleaseTime: adpReleasePending ? dates.adp : null,

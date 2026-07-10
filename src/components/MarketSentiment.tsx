@@ -37,9 +37,11 @@ const ECONOMIC_INDICATORS: EconomicIndicator[] = [
     label: 'ADP Employment',
     description: '衡量美國私營部門就業人數的變化。由 ADP 研究院公布，通常在官方非農報告前兩天發布，被視為市場先行指標。',
     icon: Users,
+    previous: '122K',
+    actual: '98K',
     forecast: '130K',
     forecastSource: '市場共識',
-    forecastAsOf: '2026-06'
+    forecastAsOf: '2026-07'
   },
   {
     id: 'nfp',
@@ -843,20 +845,26 @@ export default function MarketSentiment() {
   const indicators = ECONOMIC_INDICATORS.map(ind => {
     const dynamic = macroData ? (macroData as any)[ind.id] : null;
     
+    // 最終 actual 值（動態優先，靜態備援兜底）
+    const finalActual = dynamic?.actual ?? ind.actual ?? null;
+    const finalPrevious = dynamic?.previous ?? ind.previous ?? null;
+    
     return {
       ...ind,
-      // 優先用 API 數據，若 API 尚未載入且有靜態備用值則用靜態值
-      actual:      dynamic?.actual      ?? ind.actual      ?? null,
-      previous:    dynamic?.previous    ?? ind.previous    ?? null,
+      actual:      finalActual,
+      previous:    finalPrevious,
       forecast:    dynamic?.forecast    ?? ind.forecast    ?? null,
       nextRelease: dynamic?.nextRelease ?? ind.nextRelease ?? 'TBD',
       dataDate:    dynamic?.dataDate    ?? null,
-      // isLive: API 成功且有數據
-      isLive:   !!(dynamic?.actual),
-      // isStatic: API 尚未載入
-      isStatic: !macroData,
-      // isPending: API 有載入但數據為 null（表示本月數據未發布）
-      isPending: !!macroData && !dynamic?.actual,
+      forecastSource: dynamic?.forecastSource ?? ind.forecastSource ?? '市場共識',
+      
+      // 修正：isLive 改為判斷是否有動態數據（dynamic?.actual 非 null）
+      // OR 靜態備援有值（這種情況標記為 isStaticFallback）
+      isLive:      !!(dynamic?.actual),                    // 仍只有動態數據才算 live
+      isStaticFallback: !dynamic?.actual && !!ind.actual, // 新增：靜態備援標記
+      isStatic:    !macroData,
+      // isPending 只在 macroData 存在、動態無數據、且靜態也無備援時才顯示 TBD
+      isPending:   !!macroData && !dynamic?.actual && !ind.actual,
       pendingRelease: dynamic?.pendingRelease ?? false,
       pendingReleaseTime: dynamic?.pendingReleaseTime ?? null,
     };
@@ -2023,6 +2031,11 @@ export default function MarketSentiment() {
                       <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
                       Live Data
                     </div>
+                  ) : indicator.isStaticFallback ? (
+                    <div className="text-[8px] font-bold text-amber-500 bg-amber-500/10 border border-amber-500/20 px-1.5 py-0.5 rounded uppercase flex items-center gap-1 font-mono">
+                      <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
+                      Static
+                    </div>
                   ) : indicator.isPending ? (
                     <div className="text-[8px] font-bold text-text-dim/60 border border-border-subtle px-1.5 py-0.5 rounded uppercase font-mono">
                       Pending
@@ -2142,6 +2155,14 @@ export default function MarketSentiment() {
                           </div>
                         );
                       })()}
+                    </div>
+                  ) : indicator.isStaticFallback ? (
+                    // 靜態備援值（API 無法取得時的兜底）
+                    <div className="flex items-center gap-2">
+                      <div className="w-2 h-2 rounded-full bg-amber-500/40 animate-pulse" />
+                      <span className="text-[10px] text-amber-400/70 font-mono font-medium">
+                        靜態備援值 · 數據待更新
+                      </span>
                     </div>
                   ) : indicator.isPending ? (
                     <div className="flex items-center gap-2">

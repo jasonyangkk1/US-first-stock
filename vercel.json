@@ -9,7 +9,8 @@
     "api/macro.ts": { "maxDuration": 30 },
     "api/yields.ts": { "maxDuration": 25 },
     "api/breadth.ts": { "maxDuration": 45 },
-    "api/cot.ts": { "maxDuration": 30 }
+    "api/cot.ts": { "maxDuration": 30 },
+    "api/sector-performance.ts": { "maxDuration": 45 }
   },
   "headers": [
     {

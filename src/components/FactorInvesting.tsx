@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Layers, Zap, Shield, TrendingUp, PieChart, Info, X, Activity, Radio, Database, Cpu, Thermometer, Boxes, Bot, Cloud, Satellite, Battery, Wind, Atom } from 'lucide-react';
 import { STOCK_NAMES } from '../constants';
@@ -273,6 +273,28 @@ function Wallet(props: any) {
 export default function FactorInvesting({ onJumpToAnalysis }: { onJumpToAnalysis?: (symbol: string) => void }) {
   const [selectedStock, setSelectedStock] = useState<{ symbol: string, factor: string } | null>(null);
 
+  const [sectorPerf, setSectorPerf] = useState<any[]>([]);
+  const [sectorLoading, setSectorLoading] = useState(true);
+  const [sectorError, setSectorError] = useState(false);
+
+  useEffect(() => {
+    fetch('/api/sector-performance')
+      .then(r => {
+        if (!r.ok) throw new Error('API failed');
+        return r.json();
+      })
+      .then(data => {
+        // 接受任何有效陣列（包含靜態 fallback）
+        if (Array.isArray(data) && data.length > 0) {
+          setSectorPerf(data);
+        } else {
+          setSectorError(true);
+        }
+      })
+      .catch(() => setSectorError(true))
+      .finally(() => setSectorLoading(false));
+  }, []);
+
   return (
     <div className="flex flex-col gap-6">
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -329,6 +351,132 @@ export default function FactorInvesting({ onJumpToAnalysis }: { onJumpToAnalysis
           );
         })}
 
+      </div>
+
+      {/* 類群供需概況 */}
+      <div className="mb-6">
+        <div className="flex items-center justify-between mb-4">
+          <div>
+            <h2 className="text-sm font-bold text-text-bright uppercase tracking-widest flex items-center gap-2">
+              📡 類群供需概況 Sector Supply & Demand
+            </h2>
+            <p className="text-[10px] text-text-dim mt-0.5">
+              基於代表股即時報價與技術面，判斷各類群的資金動向與供需狀態
+            </p>
+          </div>
+          {!sectorLoading && (
+            <span className="text-[9px] text-text-dim/50">
+              每 5 分鐘更新
+            </span>
+          )}
+        </div>
+        
+        {sectorLoading ? (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+            {Array(9).fill(0).map((_, i) => (
+              <div key={i} className="h-24 bg-card-bg border border-border-subtle rounded-xl animate-pulse" />
+            ))}
+          </div>
+        ) : sectorError ? (
+          <div className="p-4 text-text-dim/50 text-sm text-center">數據載入失敗，請稍後重試</div>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+            {sectorPerf.map((s) => {
+              const isPositive = s.avgChange1D >= 0;
+              const signalColors: Record<string, string> = {
+                supply_surge:    'border-emerald-400/40 bg-emerald-400/5',
+                accumulating:    'border-blue-400/30 bg-blue-400/5',
+                balanced:        'border-border-subtle bg-card-bg',
+                distributing:    'border-orange-400/30 bg-orange-400/5',
+                demand_collapse: 'border-rose-400/40 bg-rose-400/5',
+              };
+              const changeColors: Record<string, string> = {
+                supply_surge: 'text-emerald-400',
+                accumulating: 'text-blue-400',
+                balanced: 'text-text-dim',
+                distributing: 'text-orange-400',
+                demand_collapse: 'text-rose-400',
+              };
+              
+              return (
+                <div
+                  key={s.sector}
+                  className={`p-4 rounded-xl border ${signalColors[s.supplyDemandSignal] || 'border-border-subtle bg-card-bg'} transition-all relative`}
+                >
+                  {s.isStatic && (
+                    <span className="absolute top-2 right-2 text-[7px] px-1 py-0.5 bg-text-dim/10 text-text-dim/40 border border-text-dim/20 rounded font-bold">
+                      STATIC
+                    </span>
+                  )}
+                  {/* 標題行 */}
+                  <div className="flex items-start justify-between mb-2">
+                    <span className="text-xs font-bold text-text-bright leading-tight">{s.sector}</span>
+                    <div className="text-right flex-shrink-0 ml-2">
+                      <div className={`text-sm font-mono font-bold ${isPositive ? 'text-emerald-400' : 'text-rose-400'}`}>
+                        {isPositive ? '+' : ''}{s.avgChange1D.toFixed(2)}%
+                      </div>
+                      <div className="text-[8px] text-text-dim/50">今日均值</div>
+                    </div>
+                  </div>
+                  
+                  {/* 供需訊號 */}
+                  <div className={`text-[10px] font-bold mb-1 ${changeColors[s.supplyDemandSignal] || 'text-text-dim'}`}>
+                    {s.signalLabel}
+                  </div>
+                  <p className="text-[9px] text-text-dim/70 leading-relaxed mb-2">{s.signalDesc}</p>
+                  
+                  {/* 個股漲跌小圓點 */}
+                  <div className="flex items-center gap-1 flex-wrap">
+                    {s.stocks.map((stock: any) => (
+                      <div
+                        key={stock.symbol}
+                        className={`flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[8px] font-mono ${
+                          stock.change1D >= 0
+                            ? 'bg-emerald-400/10 text-emerald-400'
+                            : 'bg-rose-400/10 text-rose-400'
+                        }`}
+                        title={`${stock.symbol}: ${stock.change1D.toFixed(2)}%，${stock.aboveMa50 ? '▲50MA' : '▼50MA'}，距高點 ${stock.distanceFromHigh.toFixed(1)}%`}
+                      >
+                        <span className={`w-1.5 h-1.5 rounded-full ${stock.aboveMa50 ? 'bg-current' : 'bg-current opacity-40'}`} />
+                        {stock.symbol}
+                        <span>{stock.change1D >= 0 ? '+' : ''}{stock.change1D.toFixed(1)}%</span>
+                      </div>
+                    ))}
+                  </div>
+                  
+                  {/* 50MA 以上比例 */}
+                  <div className="mt-2 pt-2 border-t border-border-subtle/30 flex items-center justify-between">
+                    <span className="text-[8px] text-text-dim/50">50MA 以上</span>
+                    <div className="flex items-center gap-1">
+                      <div className="w-16 h-1 bg-border-subtle rounded-full overflow-hidden">
+                        <div
+                          className={`h-full rounded-full ${
+                            s.aboveMa50Count / s.totalCount >= 0.6 ? 'bg-emerald-400' :
+                            s.aboveMa50Count / s.totalCount >= 0.4 ? 'bg-yellow-400' : 'bg-rose-400'
+                          }`}
+                          style={{ width: `${(s.aboveMa50Count / s.totalCount) * 100}%` }}
+                        />
+                      </div>
+                      <span className="text-[8px] text-text-dim">
+                        {s.aboveMa50Count}/{s.totalCount}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+        
+        {/* 說明 */}
+        <div className="mt-3 p-3 bg-card-bg/50 rounded-xl border border-border-subtle/30">
+          <p className="text-[9px] text-text-dim/50 leading-relaxed">
+            📌 供需訊號基於代表股今日漲跌幅均值與 50 日均線位置。
+            <span className="text-emerald-400/70"> 🔥 供不應求</span>（類群均漲 &gt;2%，多數在均線上）→
+            <span className="text-rose-400/70"> ❄️ 供過於求</span>（類群均跌 &gt;2%，多數跌破均線）。
+            僅供輔助判斷，非投資建議。
+          </p>
+        </div>
       </div>
 
       {/* AI Industry Recommendations */}
