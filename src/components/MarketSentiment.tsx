@@ -17,6 +17,16 @@ interface Sentiment {
     label: string;
     updated: string;
   };
+  taiwanMargin?: {
+    maintenanceRatio: number;
+    maintenanceRatioIsLive: boolean;
+    marginBalance: number;
+    marginDailyChange: number;
+    shortBalance: number;
+    marginShortRatio: number | null;
+    date: string;
+    isLive: boolean;
+  } | null;
 }
 
 interface EconomicIndicator {
@@ -326,8 +336,6 @@ export default function MarketSentiment() {
   const [carryData, setCarryData] = useState<any>(null);
   const [cotData, setCotData] = useState<any>(null);
   const [structuralData, setStructuralData] = useState<any>(null);
-  const [taiwanMarginData, setTaiwanMarginData] = useState<any>(null);
-  const [taiwanMarginLoading, setTaiwanMarginLoading] = useState(true);
   const [loading, setLoading] = useState(true);
   const [macroLoading, setMacroLoading] = useState(true);
   const [yieldsLoading, setYieldsLoading] = useState(true);
@@ -631,7 +639,17 @@ export default function MarketSentiment() {
         setCookieBlocked(true);
         setSentiment({
           vix: { value: 14.2, change: -1.2 },
-          fearAndGreed: { value: 58, label: 'Greed', updated: new Date().toISOString() }
+          fearAndGreed: { value: 58, label: 'Greed', updated: new Date().toISOString() },
+          taiwanMargin: {
+            maintenanceRatio: 153.2,
+            maintenanceRatioIsLive: false,
+            marginBalance: 1820.1,
+            marginDailyChange: -12.0,
+            shortBalance: 320.5,
+            marginShortRatio: 5.7,
+            date: '2026-07-14',
+            isLive: false,
+          },
         });
       } finally {
         setLoading(false);
@@ -836,30 +854,6 @@ export default function MarketSentiment() {
       }
     };
 
-    const fetchTaiwanMargin = async () => {
-      setTaiwanMarginLoading(true);
-      try {
-        const res = await fetch('/api/taiwan-margin');
-        if (!res.ok) throw new Error('Taiwan margin API failed');
-        const data = await res.json();
-        setTaiwanMarginData(data);
-      } catch (e) {
-        console.error('[frontend] Taiwan margin fetch failed:', e);
-        setTaiwanMarginData({
-          maintenanceRatio: 153.2,
-          maintenanceRatioIsLive: false,
-          marginBalance: 1820.1,
-          marginDailyChange: -12.0,
-          shortBalance: 320.5,
-          marginShortRatio: 5.7,
-          date: '2026-07-14',
-          isLive: false,
-        });
-      } finally {
-        setTaiwanMarginLoading(false);
-      }
-    };
-
     fetchSentiment();
     fetchMacro();
     fetchYields();
@@ -867,7 +861,6 @@ export default function MarketSentiment() {
     fetchCarry();
     fetchCOT();
     fetchStructural();
-    fetchTaiwanMargin();
   }, [fetchYields]);
 
   if (loading || !sentiment) {
@@ -3480,8 +3473,8 @@ export default function MarketSentiment() {
               let oasSignal: 'green' | 'yellow' | 'red' = isOasDanger ? 'red' : isOasBuy ? 'green' : 'yellow';
 
               // 3. Taiwan Margin
-              const twRatio = taiwanMarginData?.maintenanceRatio ?? 153.2;
-              const twChange = taiwanMarginData?.marginDailyChange ?? -12.0; // 億元
+              const twRatio = sentiment?.taiwanMargin?.maintenanceRatio ?? 153.2;
+              const twChange = sentiment?.taiwanMargin?.marginDailyChange ?? -12.0; // 億元
               let isTwDanger = twRatio > 165;
               let isTwBuy = twRatio < 135 && twChange < -6.0; // -6.0 億元
               let twSignal: 'green' | 'yellow' | 'red' = isTwDanger ? 'red' : isTwBuy ? 'green' : 'yellow';
@@ -3666,13 +3659,13 @@ export default function MarketSentiment() {
 
             {/* 指標 3：Taiwan Margin */}
             {(() => {
-              const twRatio      = taiwanMarginData?.maintenanceRatio ?? 153.2;
-              const twRatioLive  = taiwanMarginData?.maintenanceRatioIsLive ?? false; // 永遠 false（TWSE 無直接 API）
-              const twBalance    = taiwanMarginData?.marginBalance ?? 1820.1;         // 億股
-              const twChange     = taiwanMarginData?.marginDailyChange ?? -12.0;      // 億股
-              const twShort      = taiwanMarginData?.shortBalance ?? 320.5;           // 融券億股
-              const twMsRatio    = taiwanMarginData?.marginShortRatio ?? 5.7;         // 融資/融券倍數
-              const isLive       = taiwanMarginData?.isLive ?? false;                 // 融資餘額是否 Live
+              const twRatio      = sentiment?.taiwanMargin?.maintenanceRatio ?? 153.2;
+              const twRatioLive  = sentiment?.taiwanMargin?.maintenanceRatioIsLive ?? false; // 永遠 false（TWSE 無直接 API）
+              const twBalance    = sentiment?.taiwanMargin?.marginBalance ?? 1820.1;         // 億股
+              const twChange     = sentiment?.taiwanMargin?.marginDailyChange ?? -12.0;      // 億股
+              const twShort      = sentiment?.taiwanMargin?.shortBalance ?? 320.5;           // 融券億股
+              const twMsRatio    = sentiment?.taiwanMargin?.marginShortRatio ?? 5.7;         // 融資/融券倍數
+              const isLive       = sentiment?.taiwanMargin?.isLive ?? false;                 // 融資餘額是否 Live
 
               let isDanger = twRatio > 165;
               let isBuy = twRatio < 135 && twChange < -6.0; // 融資大減 60億 (注意：API 回傳的 marginDailyChange 單位是億元，所以 -6.0 億元就是 -6.0)

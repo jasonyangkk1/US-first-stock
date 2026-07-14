@@ -291,112 +291,23 @@ async function startServer() {
   });
 
   // 3. Sentiment: VIX and CNN Fear & Greed
-  const FRED_API_KEY_SENT_SRV = process.env.FRED_API_KEY
-    ? process.env.FRED_API_KEY.trim().replace(/^['"]|['"]$/g, '')
-    : undefined;
-
-  async function fetchSkewFromFredServer(): Promise<{ value: number; change: number } | null> {
-    if (!FRED_API_KEY_SENT_SRV) {
-      console.warn('[sentiment server] FRED_API_KEY not set, cannot fetch SKEW');
-      return null;
-    }
+  async function fetchSkewFromYahooServer(): Promise<{ value: number; change: number } | null> {
     try {
-      const url = `https://api.stlouisfed.org/fred/series/observations?series_id=SKEW&api_key=${FRED_API_KEY_SENT_SRV}&file_type=json&sort_order=desc&limit=3`;
-      const res = await fetch(url);
-      if (!res.ok) throw new Error(`FRED SKEW HTTP ${res.status}`);
-      const data: any = await res.json();
-      const obs = (data?.observations ?? []).filter((o: any) => o.value !== '.');
-      if (obs.length < 1) return null;
-      const latest  = parseFloat(obs[0].value);
-      const prev    = obs.length >= 2 ? parseFloat(obs[1].value) : latest;
-      const changePct = prev !== 0 ? ((latest - prev) / prev) * 100 : 0;
+      const skewQuote = await yahooFinance.quote('^SKEW');
+      if (!skewQuote) return null;
+      const value = skewQuote.regularMarketPrice ?? 141.5;
+      const change = skewQuote.regularMarketChangePercent ?? 0;
       return {
-        value:  parseFloat(latest.toFixed(2)),
-        change: parseFloat(changePct.toFixed(2)),
+        value: parseFloat(value.toFixed(2)),
+        change: parseFloat(change.toFixed(2)),
       };
     } catch (e: any) {
-      console.error('[sentiment server] FRED SKEW fetch failed:', e.message);
-      return null;
+      console.error('[sentiment server] Yahoo Finance SKEW fetch failed, using fallback:', e.message);
+      return { value: 141.5, change: 0 };
     }
   }
 
-  app.get('/api/sentiment', async (req, res) => {
-    const cacheKey = 'market_sentiment';
-    const cached = cache.get(cacheKey);
-    if (cached) return res.json(cached);
-
-    try {
-      // 1. Fetch CNN Fear & Greed Index from the discovered dataviz API
-      let fearAndGreed = {
-        value: 50,
-        rating: 'neutral',
-        previousClose: 50,
-        updated: new Date().toISOString()
-      };
-      
-      try {
-        const cnnRes = await fetch('https://production.dataviz.cnn.io/index/fearandgreed/graphdata', {
-          headers: {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Referer': 'https://www.cnn.com/markets/fear-and-greed'
-          }
-        });
-        
-        if (cnnRes.ok) {
-          const cnnData: any = await cnnRes.json();
-          if (cnnData && cnnData.fear_and_greed) {
-            fearAndGreed = {
-              value: Math.round(cnnData.fear_and_greed.score),
-              rating: cnnData.fear_and_greed.rating,
-              previousClose: Math.round(cnnData.fear_and_greed.previous_close || 0),
-              updated: cnnData.fear_and_greed.timestamp || new Date().toISOString()
-            };
-          }
-        }
-      } catch (cnnErr) {
-        console.error('CNN Fetch Error (falling back to proxy):', cnnErr);
-        // We'll proceed with default or previous proxy logic if needed, 
-        // but let's prioritize the real data.
-      }
-
-      // 2. Fetch VIX, SKEW and S&P 500 for additional context
-      const [vixQuote, skewResult]: any = await Promise.all([
-        yahooFinance.quote('^VIX'),
-        fetchSkewFromFredServer().catch(() => null)
-      ]);
-      
-      const currentVix = vixQuote?.regularMarketPrice ?? 15;
-      const currentSkew = skewResult?.value ?? null;
-      
-      const resSentiment = {
-        vix: {
-          value: currentVix,
-          change: vixQuote?.regularMarketChangePercent ?? 0,
-        },
-        skew: {
-          value: currentSkew,
-          change: skewResult?.change ?? 0,
-          isLive: currentSkew !== null,
-        },
-        fearAndGreed: {
-          value: fearAndGreed.value,
-          label: fearAndGreed.rating, // for frontend label field
-          updated: fearAndGreed.updated
-        }
-      };
-
-      cache.set(cacheKey, resSentiment, 1800); // Cache for 30 mins
-      res.json(resSentiment);
-    } catch (error) {
-      console.error('Sentiment Error:', error);
-      res.json({ 
-        vix: { value: 15, change: 0 },
-        fearAndGreed: { value: 50, label: 'neutral', updated: new Date().toISOString() }
-      });
-    }
-  });
-
-  // 3b. Taiwan Margin
+  // ── 台股融資靜態備援（TWSE 無直接提供整戶維持率 API，每週手動更新）──
   const FALLBACK_MAINTENANCE_RATIO = 153.2; // %
   const FALLBACK_DATE = '2026-07-14';
 
@@ -411,14 +322,7 @@ async function startServer() {
     isLive: false,
   };
 
-  let twmCache: { data: any; ts: number } | null = null;
-  const TWM_CACHE_TTL = 3600000; // 1 小時
-
-  app.get('/api/taiwan-margin', async (req, res) => {
-    if (twmCache && Date.now() - twmCache.ts < TWM_CACHE_TTL) {
-      return res.json(twmCache.data);
-    }
-
+  async function fetchTwseMarginDataServer(): Promise<any> {
     const fetchWithTimeout = async (url: string, timeoutMs = 8000) => {
       let timeoutId: any = null;
       let signal: AbortSignal | undefined = undefined;
@@ -475,7 +379,7 @@ async function startServer() {
         isoDate = `${rocYear + 1911}-${parts[1].padStart(2,'0')}-${parts[2].padStart(2,'0')}`;
       }
 
-      const results = {
+      return {
         maintenanceRatio: FALLBACK_MAINTENANCE_RATIO,
         maintenanceRatioIsLive: false,
         marginBalance: marginBalanceBil,
@@ -485,12 +389,88 @@ async function startServer() {
         date: isoDate,
         isLive: true,
       };
-
-      twmCache = { data: results, ts: Date.now() };
-      return res.json(results);
     } catch (e: any) {
       console.warn('[taiwan-margin server] TWSE fetch failed:', e.message);
-      return res.json(TWM_FALLBACK);
+      return TWM_FALLBACK;
+    }
+  }
+
+  app.get('/api/sentiment', async (req, res) => {
+    const cacheKey = 'market_sentiment';
+    const cached = cache.get(cacheKey);
+    if (cached) return res.json(cached);
+
+    try {
+      // 1. Fetch CNN Fear & Greed Index from the discovered dataviz API
+      let fearAndGreed = {
+        value: 50,
+        rating: 'neutral',
+        previousClose: 50,
+        updated: new Date().toISOString()
+      };
+      
+      try {
+        const cnnRes = await fetch('https://production.dataviz.cnn.io/index/fearandgreed/graphdata', {
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Referer': 'https://www.cnn.com/markets/fear-and-greed'
+          }
+        });
+        
+        if (cnnRes.ok) {
+          const cnnData: any = await cnnRes.json();
+          if (cnnData && cnnData.fear_and_greed) {
+            fearAndGreed = {
+              value: Math.round(cnnData.fear_and_greed.score),
+              rating: cnnData.fear_and_greed.rating,
+              previousClose: Math.round(cnnData.fear_and_greed.previous_close || 0),
+              updated: cnnData.fear_and_greed.timestamp || new Date().toISOString()
+            };
+          }
+        }
+      } catch (cnnErr) {
+        console.error('CNN Fetch Error (falling back to proxy):', cnnErr);
+        // We'll proceed with default or previous proxy logic if needed, 
+        // but let's prioritize the real data.
+      }
+
+      // 2. Fetch VIX, SKEW, and Taiwan Margin parallelly
+      const [vixQuote, skewResult, twMarginResult]: any = await Promise.all([
+        yahooFinance.quote('^VIX').catch(() => null),
+        fetchSkewFromYahooServer().catch(() => null),
+        fetchTwseMarginDataServer().catch(() => null)
+      ]);
+      
+      const currentVix = vixQuote?.regularMarketPrice ?? 15;
+      const currentSkew = skewResult?.value ?? 141.5;
+      
+      const resSentiment = {
+        vix: {
+          value: currentVix,
+          change: vixQuote?.regularMarketChangePercent ?? 0,
+        },
+        skew: {
+          value: currentSkew,
+          change: skewResult?.change ?? 0,
+          isLive: skewResult !== null && skewResult.value !== 141.5,
+        },
+        fearAndGreed: {
+          value: fearAndGreed.value,
+          label: fearAndGreed.rating, // for frontend label field
+          updated: fearAndGreed.updated
+        },
+        taiwanMargin: twMarginResult ?? TWM_FALLBACK,
+      };
+
+      cache.set(cacheKey, resSentiment, 1800); // Cache for 30 mins
+      res.json(resSentiment);
+    } catch (error) {
+      console.error('Sentiment Error:', error);
+      res.json({ 
+        vix: { value: 15, change: 0 },
+        fearAndGreed: { value: 50, label: 'neutral', updated: new Date().toISOString() },
+        taiwanMargin: TWM_FALLBACK,
+      });
     }
   });
 
@@ -1407,17 +1387,6 @@ async function startServer() {
         error: null
       });
     }
-  });
-
-  // 6. Factors / Algo selection
-  app.get('/api/factors', async (req, res) => {
-    // Return a predefined set of "Factor" stocks calculated server-side
-    // Momentum, Value, Quality (Filtered for Tech)
-    res.json({
-      momentum: ['NVDA', 'AVGO', 'MSFT', 'AMD', 'TSM'],
-      value: ['INTC', 'CSCO', 'IBM', 'ORCL', 'MU'],
-      quality: ['AAPL', 'MSFT', 'GOOGL', 'ASML', 'ADBE']
-    });
   });
 
   // 7. Market Breadth Analysis

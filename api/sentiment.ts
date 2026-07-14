@@ -4,35 +4,85 @@ import { yahooFinance } from './_helpers.js';
 
 const CNN_URL = 'https://production.dataviz.cnn.io/index/fearandgreed/graphdata';
 
-// FRED API 設定（與 api/macro.ts 共用同一個 env key）
-const FRED_API_KEY_SENT = process.env.FRED_API_KEY
-  ? process.env.FRED_API_KEY.trim().replace(/^['"]|['"]$/g, '')
-  : undefined;
+// ── 台股融資靜態備援（TWSE 無直接提供整戶維持率 API，每週手動更新）──
+const TW_MARGIN_FALLBACK = {
+  maintenanceRatio: 153.2,       // 整戶融資維持率（%），每週手動更新
+  maintenanceRatioIsLive: false, // 永遠為 false（TWSE 無直接 API）
+  marginBalance: 1820.1,         // 融資餘額（億股）
+  marginDailyChange: -12.0,      // 單日增減（億股）
+  shortBalance: 320.5,           // 融券餘額（億股）
+  marginShortRatio: 5.7,         // 融資/融券比（倍）
+  date: '2026-07-14',
+  isLive: false,
+};
 
-async function fetchSkewFromFred(): Promise<{ value: number; change: number } | null> {
-  if (!FRED_API_KEY_SENT) {
-    console.warn('[sentiment] FRED_API_KEY not set, cannot fetch SKEW');
-    return null;
-  }
+async function fetchTwseMarginData() {
   try {
-    // FRED series SKEW = CBOE SKEW Index，每日更新
-    const url = `https://api.stlouisfed.org/fred/series/observations?series_id=SKEW&api_key=${FRED_API_KEY_SENT}&file_type=json&sort_order=desc&limit=3`;
-    const res = await fetchWithTimeout(url, {}, 7000);
-    if (!res.ok) throw new Error(`FRED SKEW HTTP ${res.status}`);
-    const data: any = await res.json();
-    const obs = (data?.observations ?? []).filter((o: any) => o.value !== '.');
-    if (obs.length < 1) return null;
-    const latest  = parseFloat(obs[0].value);
-    const prev    = obs.length >= 2 ? parseFloat(obs[1].value) : latest;
-    // 計算日變化（百分比）
-    const changePct = prev !== 0 ? ((latest - prev) / prev) * 100 : 0;
+    // TWSE OpenAPI v1：不需日期參數，直接回傳最新一日資料
+    const url = 'https://openapi.twse.com.tw/v1/exchangeReport/MI_MARGN';
+    const res = await fetchWithTimeout(url, { headers: { Accept: 'application/json' } }, 8000);
+    if (!res.ok) throw new Error(`TWSE OpenAPI HTTP ${res.status}`);
+
+    const raw: any[] = await res.json();
+    if (!Array.isArray(raw) || raw.length === 0) {
+      throw new Error('TWSE 回傳空陣列（假日或盤後尚未公布）');
+    }
+
+    // 找合計列（StockNo 為空字串或 '合計'）
+    const summary =
+      raw.find((r: any) => !r.StockNo || r.StockNo === '合計') ??
+      raw[raw.length - 1];
+
+    const parseNum = (s: string | number) =>
+      typeof s === 'number' ? s : parseFloat(String(s).replace(/,/g, '')) || 0;
+
+    const marginToday = parseNum(summary.MarginPurchaseTodayBalance);    // 千股
+    const marginYest  = parseNum(summary.MarginPurchaseYesterdayBalance); // 千股
+    const shortToday  = parseNum(summary.ShortSaleTodayBalance);          // 千股
+
+    const marginBalanceBil = parseFloat((marginToday / 100_000).toFixed(1)); // 億股
+    const marginChangeBil  = parseFloat(((marginToday - marginYest) / 100_000).toFixed(1));
+    const shortBalanceBil  = parseFloat((shortToday / 100_000).toFixed(1));
+    const msRatio = shortToday > 0
+      ? parseFloat((marginToday / shortToday).toFixed(1))
+      : null;
+
+    // 日期：民國年/月/日 → YYYY-MM-DD
+    const dateRaw: string = summary.Date || '';
+    const parts = dateRaw.split('/');
+    const isoDate = parts.length === 3
+      ? `${parseInt(parts[0]) + 1911}-${parts[1].padStart(2, '0')}-${parts[2].padStart(2, '0')}`
+      : TW_MARGIN_FALLBACK.date;
+
     return {
-      value:  parseFloat(latest.toFixed(2)),
-      change: parseFloat(changePct.toFixed(2)),
+      maintenanceRatio: TW_MARGIN_FALLBACK.maintenanceRatio, // 靜態備援
+      maintenanceRatioIsLive: false,
+      marginBalance: marginBalanceBil,
+      marginDailyChange: marginChangeBil,
+      shortBalance: shortBalanceBil,
+      marginShortRatio: msRatio,
+      date: isoDate,
+      isLive: true,
     };
   } catch (e) {
-    console.error('[sentiment] FRED SKEW fetch failed:', (e as Error).message);
+    console.warn('[sentiment] TWSE margin fetch failed:', (e as Error).message);
     return null;
+  }
+}
+
+async function fetchSkewFromYahoo(): Promise<{ value: number; change: number } | null> {
+  try {
+    const skewQuote = await yahooFinance.quote('^SKEW');
+    if (!skewQuote) return null;
+    const value = skewQuote.regularMarketPrice ?? 141.5;
+    const change = skewQuote.regularMarketChangePercent ?? 0;
+    return {
+      value: parseFloat(value.toFixed(2)),
+      change: parseFloat(change.toFixed(2)),
+    };
+  } catch (e) {
+    console.error('[sentiment] Yahoo Finance SKEW fetch failed, using fallback:', (e as Error).message);
+    return { value: 141.5, change: 0 };
   }
 }
 
@@ -134,11 +184,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method === 'OPTIONS') return res.status(200).end();
 
   try {
-    const vixPromise  = yahooFinance.quote('^VIX').catch(() => null);
-    const skewPromise = fetchSkewFromFred().catch(() => null);
-    const cnnDataPromise = getCNNData();
+    const vixPromise          = yahooFinance.quote('^VIX').catch(() => null);
+    const skewPromise         = fetchSkewFromYahoo().catch(() => null);
+    const cnnDataPromise      = getCNNData();
+    const twMarginPromise     = fetchTwseMarginData().catch(() => null);
 
-    const [vixQuote, skewResult, cnnData] = await Promise.all([vixPromise, skewPromise, cnnDataPromise]);
+    const [vixQuote, skewResult, cnnData, twMarginResult] = await Promise.all([
+      vixPromise, skewPromise, cnnDataPromise, twMarginPromise
+    ]);
     
     let fearAndGreed: any = cnnData;
     if (!fearAndGreed) {
@@ -147,7 +200,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     const vixPrice  = (vixQuote as any)?.regularMarketPrice ?? 15;
     const vixChange = (vixQuote as any)?.regularMarketChangePercent ?? 0;
-    const skewPrice = skewResult?.value ?? null;
+    const skewPrice = skewResult?.value ?? 141.5;
     const skewChange = skewResult?.change ?? 0;
 
     res.json({
@@ -158,18 +211,20 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       skew: {
         value: skewPrice,
         change: skewChange,
-        isLive: skewPrice !== null,
+        isLive: skewResult !== null && skewResult.value !== 141.5,
       },
       fearAndGreed: {
         ...fearAndGreed,
         updated: new Date().toISOString()
-      }
+      },
+      taiwanMargin: twMarginResult ?? TW_MARGIN_FALLBACK,
     });
   } catch (error) {
     console.error('[sentiment] Handler error:', error);
     res.json({ 
       vix: { value: 15, change: 0 }, 
-      fearAndGreed: { value: 50, label: 'neutral', source: 'error', updated: new Date().toISOString() } 
+      fearAndGreed: { value: 50, label: 'neutral', source: 'error', updated: new Date().toISOString() },
+      taiwanMargin: TW_MARGIN_FALLBACK,
     });
   }
 }
