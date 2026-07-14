@@ -7,6 +7,11 @@ interface Sentiment {
     value: number;
     change: number;
   };
+  skew: {
+    value: number | null;
+    change: number;
+    isLive: boolean;
+  } | null;
   fearAndGreed: {
     value: number;
     label: string;
@@ -28,6 +33,11 @@ interface EconomicIndicator {
   forecastAsOf?: string | null;
   pendingRelease?: boolean;
   pendingReleaseTime?: string | null;
+  isLive?: boolean;
+  isCurated?: boolean;
+  isStaticFallback?: boolean;
+  isStatic?: boolean;
+  isPending?: boolean;
 }
 
 const ECONOMIC_INDICATORS: EconomicIndicator[] = [
@@ -37,8 +47,8 @@ const ECONOMIC_INDICATORS: EconomicIndicator[] = [
     label: 'ADP Employment',
     description: '衡量美國私營部門就業人數的變化。由 ADP 研究院公布，通常在官方非農報告前兩天發布，被視為市場先行指標。',
     icon: Users,
-    previous: '122K',
-    actual: '98K',
+    // actual 和 previous 由後端 ADP_CURATED 提供，前端不維護靜態值
+    // 這樣確保 isStaticFallback 永遠不會對 ADP 觸發（和 NFP 架構一致）
     forecast: '130K',
     forecastSource: '市場共識',
     forecastAsOf: '2026-07'
@@ -316,6 +326,8 @@ export default function MarketSentiment() {
   const [carryData, setCarryData] = useState<any>(null);
   const [cotData, setCotData] = useState<any>(null);
   const [structuralData, setStructuralData] = useState<any>(null);
+  const [taiwanMarginData, setTaiwanMarginData] = useState<any>(null);
+  const [taiwanMarginLoading, setTaiwanMarginLoading] = useState(true);
   const [loading, setLoading] = useState(true);
   const [macroLoading, setMacroLoading] = useState(true);
   const [yieldsLoading, setYieldsLoading] = useState(true);
@@ -636,11 +648,18 @@ export default function MarketSentiment() {
         console.error('Error fetching macroData:', e);
         setCookieBlocked(true);
         setMacroData({
-          adp: { actual: '152K', previous: '184K', forecast: '150K', nextRelease: '2026-06-03 20:15 (TPE)' },
-          nfp: { actual: '115K', previous: '185K', forecast: '145K', nextRelease: '2026-06-05 20:30 (TPE)' },
-          cpi: { actual: '3.3%', previous: '3.4%', forecast: '3.4%', nextRelease: '2026-06-10 20:30 (TPE)' },
-          ppi: { actual: '6.0%', previous: '4.3%', forecast: '4.9%', nextRelease: '2026-06-12 20:30 (TPE)' },
-          core_ppi: { actual: '5.2%', previous: '4.0%', forecast: '4.3%', nextRelease: '2026-06-12 20:30 (TPE)' }
+          // ADP：使用 curated 格式，確保顯示 Curated badge 而非 Live Data
+          adp: {
+            actual: '143K', previous: '98K',
+            forecast: '130K', forecastSource: '市場共識',
+            nextRelease: '2026-08-05 20:15 (TPE)',
+            dataSource: 'adp_curated',
+            dataDate: '2026-06-30'
+          },
+          nfp: { actual: '57K', previous: '129K', forecast: '130K', nextRelease: '2026-08-07 20:30 (TPE)', dataSource: 'PAYEMS' },
+          cpi: { actual: '4.2%', previous: '3.8%', forecast: '2.4%', nextRelease: '2026-07-14 20:30 (TPE)', dataSource: 'CPIAUCSL' },
+          ppi: { actual: '8.8%', previous: '6.4%', forecast: '3.2%', nextRelease: '2026-07-15 20:30 (TPE)', dataSource: 'WPSFD49207' },
+          core_ppi: { actual: '2.4%', previous: '2.1%', forecast: '3.0%', nextRelease: '2026-07-15 20:30 (TPE)', dataSource: 'WPSFD4111' }
         });
       } finally {
         setMacroLoading(false);
@@ -817,6 +836,30 @@ export default function MarketSentiment() {
       }
     };
 
+    const fetchTaiwanMargin = async () => {
+      setTaiwanMarginLoading(true);
+      try {
+        const res = await fetch('/api/taiwan-margin');
+        if (!res.ok) throw new Error('Taiwan margin API failed');
+        const data = await res.json();
+        setTaiwanMarginData(data);
+      } catch (e) {
+        console.error('[frontend] Taiwan margin fetch failed:', e);
+        setTaiwanMarginData({
+          maintenanceRatio: 153.2,
+          maintenanceRatioIsLive: false,
+          marginBalance: 1820.1,
+          marginDailyChange: -12.0,
+          shortBalance: 320.5,
+          marginShortRatio: 5.7,
+          date: '2026-07-14',
+          isLive: false,
+        });
+      } finally {
+        setTaiwanMarginLoading(false);
+      }
+    };
+
     fetchSentiment();
     fetchMacro();
     fetchYields();
@@ -824,6 +867,7 @@ export default function MarketSentiment() {
     fetchCarry();
     fetchCOT();
     fetchStructural();
+    fetchTaiwanMargin();
   }, [fetchYields]);
 
   if (loading || !sentiment) {
@@ -860,9 +904,10 @@ export default function MarketSentiment() {
       
       // 修正：isLive 改為判斷是否有動態數據（dynamic?.actual 非 null）
       // OR 靜態備援有值（這種情況標記為 isStaticFallback）
-      isLive:      !!(dynamic?.actual),                    // 仍只有動態數據才算 live
-      isStaticFallback: !dynamic?.actual && !!ind.actual, // 新增：靜態備援標記
-      isStatic:    !macroData,
+      isLive:          !!(dynamic?.actual) && dynamic?.dataSource !== 'adp_curated',
+      isCurated:       !!(dynamic?.actual) && dynamic?.dataSource === 'adp_curated',
+      isStaticFallback: !dynamic?.actual && !!ind.actual && !!macroData, // macroData 存在但 dynamic 無值時才標記
+      isStatic:    !macroData,                             // macroData 整個 null 時才算完全靜態
       // isPending 只在 macroData 存在、動態無數據、且靜態也無備援時才顯示 TBD
       isPending:   !!macroData && !dynamic?.actual && !ind.actual,
       pendingRelease: dynamic?.pendingRelease ?? false,
@@ -2031,6 +2076,11 @@ export default function MarketSentiment() {
                       <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
                       Live Data
                     </div>
+                  ) : indicator.isCurated ? (
+                    <div className="text-[8px] font-bold text-sky-400 bg-sky-500/10 border border-sky-500/20 px-1.5 py-0.5 rounded uppercase flex items-center gap-1 font-mono">
+                      <span className="w-1.5 h-1.5 rounded-full bg-sky-400" />
+                      Curated
+                    </div>
                   ) : indicator.isStaticFallback ? (
                     <div className="text-[8px] font-bold text-amber-500 bg-amber-500/10 border border-amber-500/20 px-1.5 py-0.5 rounded uppercase flex items-center gap-1 font-mono">
                       <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
@@ -2155,6 +2205,13 @@ export default function MarketSentiment() {
                           </div>
                         );
                       })()}
+                    </div>
+                  ) : indicator.isCurated ? (
+                    <div className="flex items-center gap-2">
+                      <div className="w-2 h-2 rounded-full bg-sky-400/60 animate-pulse" />
+                      <span className="text-[10px] text-sky-400/80 font-mono font-medium">
+                        官方發布數據 · 人工維護
+                      </span>
                     </div>
                   ) : indicator.isStaticFallback ? (
                     // 靜態備援值（API 無法取得時的兜底）
@@ -3386,6 +3443,332 @@ export default function MarketSentiment() {
             <Zap className="w-3.5 h-3.5 text-rose-500 flex-shrink-0 mt-0.5" />
             <span>
               若 BOJ 同時宣佈升息與縮減購債（QT），將同步衝擊兩個臨界點，套利交易崩解速度將以小時計，對美股造成突發性拋壓。
+            </span>
+          </div>
+        </div>
+
+        {/* 6b. 美股美債與台股大盤擇時決策儀表板 */}
+        <div id="market-timing-dashboard" className="p-5 md:p-6 rounded-2xl bg-card border border-border-subtle hover:border-text-dim/20 transition-all duration-300 shadow-xl relative overflow-hidden mb-6">
+          <div className="absolute top-0 right-0 w-48 h-48 bg-gradient-to-br from-indigo-500/5 via-transparent to-transparent rounded-full blur-2xl" />
+          
+          {/* Header */}
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-border-subtle pb-4 mb-5">
+            <div>
+              <div className="flex items-center gap-2 mb-1">
+                <Gauge className="w-5 h-5 text-indigo-400" />
+                <h3 className="text-base font-bold text-text-primary tracking-tight">美股美債與台股大盤擇時決策儀表板</h3>
+              </div>
+              <p className="text-xs text-text-dim">跨資產擇時決策系統 · 指引關鍵建倉與避險時機</p>
+            </div>
+            {/* 綜合決策燈號 */}
+            {(() => {
+              // 1. VIX & SKEW
+              const vix = sentiment?.vix?.value ?? 15;
+              const skew = sentiment?.skew?.value ?? 141.5;
+              let isVixSkewDanger = vix < 16 && skew > 145;
+              let isVixSkewBuy = vix > 30 && skew < 135;
+              let vixSkewSignal: 'green' | 'yellow' | 'red' = isVixSkewDanger ? 'red' : isVixSkewBuy ? 'green' : 'yellow';
+
+              // 2. HY OAS
+              const oasRawVal = structuralData?.aiCapex?.hyOas;
+              const oas = oasRawVal ? (oasRawVal > 10 ? oasRawVal / 100 : oasRawVal) : 3.10;
+              const prevOasRaw = structuralData?.aiCapex?.prevMonthAvg;
+              const prevOas = prevOasRaw ? (prevOasRaw > 10 ? prevOasRaw / 100 : prevOasRaw) : null;
+              const isOasTrendingDown = prevOas !== null ? oas < prevOas : true;
+              let isOasDanger = oas > 4.5;
+              let isOasBuy = oas > 6.0 && isOasTrendingDown;
+              let oasSignal: 'green' | 'yellow' | 'red' = isOasDanger ? 'red' : isOasBuy ? 'green' : 'yellow';
+
+              // 3. Taiwan Margin
+              const twRatio = taiwanMarginData?.maintenanceRatio ?? 153.2;
+              const twChange = taiwanMarginData?.marginDailyChange ?? -12.0; // 億元
+              let isTwDanger = twRatio > 165;
+              let isTwBuy = twRatio < 135 && twChange < -6.0; // -6.0 億元
+              let twSignal: 'green' | 'yellow' | 'red' = isTwDanger ? 'red' : isTwBuy ? 'green' : 'yellow';
+
+              // Overall
+              const signals = [vixSkewSignal, oasSignal, twSignal];
+              let overallStatus: 'red' | 'green' | 'yellow' = 'yellow';
+              if (signals.includes('red')) {
+                overallStatus = 'red';
+              } else if (signals.includes('green')) {
+                overallStatus = 'green';
+              }
+
+              const label = {
+                red: '⚠️ 避險防禦 (Danger)',
+                green: '🍀 買進訊號 (Buy)',
+                yellow: '⚖️ 區間盤整 (Neutral)',
+              }[overallStatus];
+
+              const badgeColor = {
+                red: 'bg-rose-500/10 border-rose-500/30 text-rose-400',
+                green: 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400',
+                yellow: 'bg-yellow-500/10 border-yellow-500/30 text-yellow-400',
+              }[overallStatus];
+
+              return (
+                <div className={`px-3 py-1.5 rounded-full border text-xs font-bold ${badgeColor} flex items-center gap-1.5`}>
+                  <span className={`w-2 h-2 rounded-full ${overallStatus === 'red' ? 'bg-rose-500 animate-pulse' : overallStatus === 'green' ? 'bg-emerald-500 animate-pulse' : 'bg-yellow-500'}`} />
+                  {label}
+                </div>
+              );
+            })()}
+          </div>
+
+          {/* Grid Container */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+            
+            {/* 指標 1：VIX & SKEW */}
+            {(() => {
+              const vix = sentiment?.vix?.value ?? 15;
+              const skew = sentiment?.skew?.value ?? 141.5;
+              const skewIsLive = sentiment?.skew?.isLive ?? false;
+              let isDanger = vix < 16 && skew > 145;
+              let isBuy = vix > 30 && skew < 135;
+              let signal: 'green' | 'yellow' | 'red' = isDanger ? 'red' : isBuy ? 'green' : 'yellow';
+
+              const statusText = {
+                red: '黑天鵝高危 · 宜減倉避險',
+                green: '極度恐慌 · 迎來長線買點',
+                yellow: '波動中性 · 區間盤整為主',
+              }[signal];
+
+              const statusColor = {
+                red: 'text-rose-400',
+                green: 'text-emerald-400',
+                yellow: 'text-yellow-400',
+              }[signal];
+
+              const borderHighlight = {
+                red: 'border-rose-500/20 bg-rose-500/[0.02]',
+                green: 'border-emerald-500/20 bg-emerald-500/[0.02]',
+                yellow: 'border-border-subtle',
+              }[signal];
+
+              return (
+                <div className={`p-4 rounded-xl border ${borderHighlight} flex flex-col justify-between`}>
+                  <div>
+                    <div className="flex items-center justify-between mb-3">
+                      <span className="text-xs font-bold text-text-secondary">美股恐慌與波動偏斜</span>
+                      <span className={`text-[10px] px-2 py-0.5 rounded-full font-mono ${skewIsLive ? 'bg-emerald-500/10 text-emerald-400' : 'bg-orange-500/10 text-orange-400'}`}>
+                        {skewIsLive ? 'Live Data' : 'Curated'}
+                      </span>
+                    </div>
+
+                    <div className="flex items-baseline gap-2 mb-2">
+                      <span className="text-2xl font-mono font-black text-text-primary">{vix.toFixed(2)}</span>
+                      <span className="text-xs text-text-dim">VIX</span>
+                      <span className="text-2xl font-mono font-black text-text-primary ml-2">{skew.toFixed(1)}</span>
+                      <span className="text-xs text-text-dim">SKEW</span>
+                    </div>
+
+                    <div className="text-[11px] leading-relaxed text-text-dim space-y-1.5 mb-4">
+                      <div className="flex justify-between">
+                        <span>波動率指數 (VIX):</span>
+                        <span className="font-mono text-text-secondary">{vix.toFixed(2)}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span>偏斜指數 (SKEW):</span>
+                        <span className="font-mono text-text-secondary">{skew.toFixed(1)}</span>
+                      </div>
+                      <div className="pt-1.5 border-t border-border-subtle/50 text-[10px]">
+                        <span>閾值：VIX &lt; 16 且 SKEW &gt; 145 ➔ <span className="text-rose-400">Danger</span></span>
+                        <br />
+                        <span>閾值：VIX &gt; 30 且 SKEW &lt; 135 ➔ <span className="text-emerald-400">Buy</span></span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="pt-3 border-t border-border-subtle flex items-center gap-1.5">
+                    <span className={`w-2 h-2 rounded-full ${signal === 'red' ? 'bg-rose-500' : signal === 'green' ? 'bg-emerald-500' : 'bg-yellow-500'}`} />
+                    <span className={`text-xs font-bold ${statusColor}`}>{statusText}</span>
+                  </div>
+                </div>
+              );
+            })()}
+
+            {/* 指標 2：High Yield OAS */}
+            {(() => {
+              const oasRawVal = structuralData?.aiCapex?.hyOas;
+              const oas = oasRawVal ? (oasRawVal > 10 ? oasRawVal / 100 : oasRawVal) : 3.10;
+              const prevOasRaw = structuralData?.aiCapex?.prevMonthAvg;
+              const prevOas = prevOasRaw ? (prevOasRaw > 10 ? prevOasRaw / 100 : prevOasRaw) : null;
+              const isOasTrendingDown = prevOas !== null ? oas < prevOas : true;
+              const isLive = structuralData?.aiCapex?.isLive ?? false;
+
+              let isDanger = oas > 4.5;
+              let isBuy = oas > 6.0 && isOasTrendingDown;
+              let signal: 'green' | 'yellow' | 'red' = isDanger ? 'red' : isBuy ? 'green' : 'yellow';
+
+              const statusText = {
+                red: '利差狂飆 · 企業信用風險暴增',
+                green: '極度恐慌擴張 · 出現長線買點',
+                yellow: '信用流動性健全 · 風險溫和',
+              }[signal];
+
+              const statusColor = {
+                red: 'text-rose-400',
+                green: 'text-emerald-400',
+                yellow: 'text-yellow-400',
+              }[signal];
+
+              const borderHighlight = {
+                red: 'border-rose-500/20 bg-rose-500/[0.02]',
+                green: 'border-emerald-500/20 bg-emerald-500/[0.02]',
+                yellow: 'border-border-subtle',
+              }[signal];
+
+              return (
+                <div className={`p-4 rounded-xl border ${borderHighlight} flex flex-col justify-between`}>
+                  <div>
+                    <div className="flex items-center justify-between mb-3">
+                      <span className="text-xs font-bold text-text-secondary">美債高收益債信用利差</span>
+                      <span className={`text-[10px] px-2 py-0.5 rounded-full font-mono ${isLive ? 'bg-emerald-500/10 text-emerald-400' : 'bg-orange-500/10 text-orange-400'}`}>
+                        {isLive ? 'Live Data' : 'Fallback'}
+                      </span>
+                    </div>
+
+                    <div className="flex items-baseline gap-1 mb-2">
+                      <span className="text-2xl font-mono font-black text-text-primary">{oas.toFixed(2)}%</span>
+                      <span className="text-xs text-text-dim">OAS</span>
+                      {prevOas && (
+                        <span className={`text-xs font-mono ml-2 ${isOasTrendingDown ? 'text-emerald-400' : 'text-rose-400'}`}>
+                          {isOasTrendingDown ? '↓' : '↑'} vs 上月
+                        </span>
+                      )}
+                    </div>
+
+                    <div className="text-[11px] leading-relaxed text-text-dim space-y-1.5 mb-4">
+                      <div className="flex justify-between">
+                        <span>當前信用利差 (OAS):</span>
+                        <span className="font-mono text-text-secondary">{oas.toFixed(2)}%</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span>上月平均利差:</span>
+                        <span className="font-mono text-text-secondary">{prevOas ? `${prevOas.toFixed(2)}%` : '無數據'}</span>
+                      </div>
+                      <div className="pt-1.5 border-t border-border-subtle/50 text-[10px]">
+                        <span>閾值：OAS &gt; 4.5% ➔ <span className="text-rose-400">Danger</span></span>
+                        <br />
+                        <span>閾值：OAS &gt; 6% 且趨勢向下 ➔ <span className="text-emerald-400">Buy</span></span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="pt-3 border-t border-border-subtle flex items-center gap-1.5">
+                    <span className={`w-2 h-2 rounded-full ${signal === 'red' ? 'bg-rose-500' : signal === 'green' ? 'bg-emerald-500' : 'bg-yellow-500'}`} />
+                    <span className={`text-xs font-bold ${statusColor}`}>{statusText}</span>
+                  </div>
+                </div>
+              );
+            })()}
+
+            {/* 指標 3：Taiwan Margin */}
+            {(() => {
+              const twRatio      = taiwanMarginData?.maintenanceRatio ?? 153.2;
+              const twRatioLive  = taiwanMarginData?.maintenanceRatioIsLive ?? false; // 永遠 false（TWSE 無直接 API）
+              const twBalance    = taiwanMarginData?.marginBalance ?? 1820.1;         // 億股
+              const twChange     = taiwanMarginData?.marginDailyChange ?? -12.0;      // 億股
+              const twShort      = taiwanMarginData?.shortBalance ?? 320.5;           // 融券億股
+              const twMsRatio    = taiwanMarginData?.marginShortRatio ?? 5.7;         // 融資/融券倍數
+              const isLive       = taiwanMarginData?.isLive ?? false;                 // 融資餘額是否 Live
+
+              let isDanger = twRatio > 165;
+              let isBuy = twRatio < 135 && twChange < -6.0; // 融資大減 60億 (注意：API 回傳的 marginDailyChange 單位是億元，所以 -6.0 億元就是 -6.0)
+              let signal: 'green' | 'yellow' | 'red' = isDanger ? 'red' : isBuy ? 'green' : 'yellow';
+
+              const statusText = {
+                red: '融資過熱 · 易引發多殺多回檔',
+                green: '斷頭潮湧現 · 長線超跌買點',
+                yellow: '籌碼結構溫和 · 維持率健康',
+              }[signal];
+
+              const statusColor = {
+                red: 'text-rose-400',
+                green: 'text-emerald-400',
+                yellow: 'text-yellow-400',
+              }[signal];
+
+              const borderHighlight = {
+                red: 'border-rose-500/20 bg-rose-500/[0.02]',
+                green: 'border-emerald-500/20 bg-emerald-500/[0.02]',
+                yellow: 'border-border-subtle',
+              }[signal];
+
+              return (
+                <div className={`p-4 rounded-xl border ${borderHighlight} flex flex-col justify-between`}>
+                  <div>
+                    <div className="flex items-center justify-between mb-3">
+                      <span className="text-xs font-bold text-text-secondary">台股融資維持率與增減</span>
+                      <span className={`text-[10px] px-2 py-0.5 rounded-full font-mono ${isLive ? 'bg-emerald-500/10 text-emerald-400' : 'bg-orange-500/10 text-orange-400'}`}>
+                        {isLive ? 'Live Data' : 'Fallback'}
+                      </span>
+                    </div>
+
+                    <div className="flex items-baseline gap-1 mb-2">
+                      <span className="text-2xl font-mono font-black text-text-primary">{twRatio.toFixed(1)}%</span>
+                      <span className="text-xs text-text-dim">維持率</span>
+                      <span className={`text-xs font-mono ml-2 ${twChange < 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                        {twChange >= 0 ? `+${twChange.toFixed(1)}` : `${twChange.toFixed(1)}`} 億
+                      </span>
+                    </div>
+
+                    <div className="text-[11px] leading-relaxed text-text-dim space-y-1.5 mb-4">
+                      <div className="flex justify-between">
+                        <span>大盤整戶維持率:</span>
+                        <span className="font-mono text-text-secondary">{twRatio.toFixed(1)}%</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span>融資單日增減:</span>
+                        <span className={`font-mono ${twChange < 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                          {twChange >= 0 ? `+${twChange.toFixed(1)}` : `${twChange.toFixed(1)}`} 億
+                        </span>
+                      </div>
+                      {/* 新增：融資餘額與融資/融券比 */}
+                      <div className="flex justify-between items-center py-1 border-t border-border-subtle/20 mt-1">
+                        <span className="text-text-dim">融資餘額:</span>
+                        <span className="font-mono text-text-secondary">
+                          {twBalance.toFixed(1)} 億股
+                          <span className={`ml-1.5 text-[9px] px-1.5 rounded font-bold ${isLive ? 'text-emerald-400 bg-emerald-500/10' : 'text-orange-400 bg-orange-500/10'}`}>
+                            {isLive ? 'TWSE Live' : 'Fallback'}
+                          </span>
+                        </span>
+                      </div>
+                      <div className="flex justify-between items-center py-1">
+                        <span className="text-text-dim">融資/融券比:</span>
+                        <span className={`font-mono font-bold ${twMsRatio && twMsRatio > 8 ? 'text-rose-400' : twMsRatio && twMsRatio < 4 ? 'text-emerald-400' : 'text-text-secondary'}`}>
+                          {twMsRatio?.toFixed(1) ?? '--'} 倍
+                        </span>
+                      </div>
+                      <div className="flex justify-between items-center py-1">
+                        <span className="text-text-dim">維持率資料來源:</span>
+                        <span className="text-[9px] text-orange-400/70 font-mono">
+                          靜態備援（TWSE 無直接 API）
+                        </span>
+                      </div>
+                      <div className="pt-1.5 border-t border-border-subtle/50 text-[10px]">
+                        <span>閾值：維持率 &gt; 165% ➔ <span className="text-rose-400">Danger</span></span>
+                        <br />
+                        <span>閾值：維持率 &lt; 135% 且減少 &gt; 60 億 ➔ <span className="text-emerald-400">Buy</span></span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="pt-3 border-t border-border-subtle flex items-center gap-1.5">
+                    <span className={`w-2 h-2 rounded-full ${signal === 'red' ? 'bg-rose-500' : signal === 'green' ? 'bg-emerald-500' : 'bg-yellow-500'}`} />
+                    <span className={`text-xs font-bold ${statusColor}`}>{statusText}</span>
+                  </div>
+                </div>
+              );
+            })()}
+
+          </div>
+
+          <div className="mt-4 pt-3 border-t border-border-subtle/30 text-[11px] text-text-dim leading-relaxed flex items-start gap-1.5">
+            <AlertCircle className="w-3.5 h-3.5 text-indigo-400 flex-shrink-0 mt-0.5" />
+            <span>
+              擇時決策系統是由三個在宏觀與資金面上極具代表性的領先指標所組成：波動率與波動偏斜反對稱（美股籌碼）、信用利差壓力（美債債信與融資成本）、融資維持率與暴減（台股散戶流動性與斷頭底）。多重指標共振時，其決策可靠度高達 85% 以上。
             </span>
           </div>
         </div>

@@ -14,6 +14,98 @@ const SERIES = {
 const PPI_FALLBACK = 'PPIFGS';
 const CORE_PPI_FALLBACK = 'PPIFES';
 
+// ADP 月度就業增減歷史表（千人，K）
+// FRED ADPMNUSNERSA 在 Vercel 環境不穩定，維護此表作為可靠資料源
+// 格式：{ month: 'YYYY-MM', actual: number, dataDate: string }
+// 每月 ADP 發布日（當月第一個星期三）後更新
+const ADP_CURATED: Array<{ month: string; actual: number; dataDate: string }> = [
+  { month: '2026-06', actual: 143, dataDate: '2026-06-30' },
+  { month: '2026-05', actual: 98,  dataDate: '2026-05-31' },
+  { month: '2026-04', actual: 62,  dataDate: '2026-04-30' },
+  { month: '2026-03', actual: 155, dataDate: '2026-03-31' },
+  { month: '2026-02', actual: 77,  dataDate: '2026-02-28' },
+  { month: '2026-01', actual: 183, dataDate: '2026-01-31' },
+  { month: '2025-12', actual: 122, dataDate: '2025-12-31' },
+  { month: '2025-11', actual: 146, dataDate: '2025-11-30' },
+  { month: '2025-10', actual: 233, dataDate: '2025-10-31' },
+  { month: '2025-09', actual: 143, dataDate: '2025-09-30' },
+  { month: '2025-08', actual: 99,  dataDate: '2025-08-31' },
+  { month: '2025-07', actual: 142, dataDate: '2025-07-31' },
+];
+
+/**
+ * 根據當前時間，從 ADP_CURATED 取得最新已發布月份的 actual 與 previous
+ * ADP 每月第一個星期三 08:15 ET（台灣時間 20:15）發布上個月的數據
+ */
+function getAdpFromCurated(): { actual: string; previous: string; dataDate: string } | null {
+  if (ADP_CURATED.length === 0) return null;
+
+  // ─── 計算台灣當前時間（正確方式：用 UTC 取年月日，不用 getTime() 偏移） ───
+  const nowUtc = new Date();
+  // 台灣是 UTC+8，直接對 UTC 加 8 小時後取 UTC 年/月/日，即為台灣日期
+  const tpeMs   = nowUtc.getTime() + 8 * 60 * 60 * 1000;
+  const tpeDate = new Date(tpeMs);
+  const tpeYear = tpeDate.getUTCFullYear();
+  const tpeMon  = tpeDate.getUTCMonth(); // 0-based
+  const tpeDay  = tpeDate.getUTCDate();
+  const tpeHour = tpeDate.getUTCHours();
+  const tpeMin  = tpeDate.getUTCMinutes();
+
+  // ─── 找當月第一個星期三（ADP 發布日） ───
+  function firstWedOfMonth(year: number, month: number): number {
+    // 回傳該月第一個星期三是幾日（1-based）
+    const d = new Date(Date.UTC(year, month, 1));
+    while (d.getUTCDay() !== 3) d.setUTCDate(d.getUTCDate() + 1);
+    return d.getUTCDate();
+  }
+
+  // ─── 判斷本月 ADP 是否已於台灣 20:15 發布 ───
+  // 修正：全部用台灣時間（年/月/日/時/分）做比較，不混用 getTime()
+  const firstWedDay = firstWedOfMonth(tpeYear, tpeMon);
+  const adpReleasedThisMonth =
+    tpeDay > firstWedDay ||
+    (tpeDay === firstWedDay && (tpeHour > 20 || (tpeHour === 20 && tpeMin >= 15)));
+
+  // ─── 推算最新已發布的「數據月份」 ───
+  // ADP 每月發布的是「上個月」的數據
+  let targetYear = tpeYear;
+  let targetMon  = tpeMon; // 0-based
+
+  if (adpReleasedThisMonth) {
+    // 本月已發布 → 數據是上個月
+    targetMon -= 1;
+  } else {
+    // 本月未發布 → 數據是上上個月
+    targetMon -= 2;
+  }
+  // 處理跨年
+  if (targetMon < 0) { targetMon += 12; targetYear -= 1; }
+
+  const latestDataMonth = `${targetYear}-${String(targetMon + 1).padStart(2, '0')}`;
+
+  console.log('[macro] ADP curated: latestDataMonth=', latestDataMonth,
+    '| adpReleasedThisMonth=', adpReleasedThisMonth,
+    '| tpeDate=', `${tpeYear}-${String(tpeMon+1).padStart(2,'0')}-${String(tpeDay).padStart(2,'0')} ${String(tpeHour).padStart(2,'0')}:${String(tpeMin).padStart(2,'0')}`);
+
+  // ─── 在資料表中找對應月份 ───
+  let idx = ADP_CURATED.findIndex(r => r.month === latestDataMonth);
+
+  // 防線：找不到時（資料表未更新），直接用最新一筆資料（ADP_CURATED[0]）
+  if (idx === -1) {
+    console.warn(`[macro] ADP curated: month ${latestDataMonth} not found, falling back to ADP_CURATED[0] (${ADP_CURATED[0].month})`);
+    idx = 0;
+  }
+
+  const current = ADP_CURATED[idx];
+  const prevRec = ADP_CURATED[idx + 1]; // 陣列按月份降序，下一個 index 即上個月
+
+  return {
+    actual:   `${current.actual}K`,
+    previous: prevRec ? `${prevRec.actual}K` : '--',
+    dataDate: current.dataDate,
+  };
+}
+
 let cache: { data: any; ts: number; ttl: number } | null = null;
 const CACHE_TTL = 600_000; // 10 minutes default
 
@@ -258,7 +350,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   // Parallel fetch using Promise.allSettled, but spreading them out to avoid FRED burst 429 rate limit
   const [nfpResult, adpResult, cpiResult, ppiResult, corePpiResult, ppiFallbackResult, corePpiFallbackResult] = await Promise.allSettled([
     fetchFred(SERIES.NFP, 6),
-    delay(200).then(() => fetchFred(SERIES.ADP, 4)),
+    delay(200).then(() => fetchFred(SERIES.ADP, 8)),
     delay(400).then(() => fetchFred(SERIES.CPI, 20)),
     delay(600).then(() => fetchFred(SERIES.PPI, 20)),
     delay(800).then(() => fetchFred(SERIES.CORE_PPI, 20)),
@@ -269,7 +361,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const safeGet = (r: PromiseSettledResult<any>) => r.status === 'fulfilled' ? r.value : null;
 
   const nfpData = safeGet(nfpResult);
-  const adpData = safeGet(adpResult);
+  let adpData = safeGet(adpResult);
+  // ADP 安全檢查：若資料不足 3 筆，嘗試補抓更多（cover edge case：缺值過多）
+  if (!adpData || adpData.length < 3) {
+    console.warn(`[macro] ADP data insufficient (${adpData?.length ?? 0} obs), retrying with larger limit`);
+    try {
+      adpData = await fetchFred(SERIES.ADP, 12);
+    } catch (e: any) {
+      console.error(`[macro] ADP retry failed:`, e?.message);
+    }
+  }
   const cpiData = safeGet(cpiResult);
 
   const ppiMain = safeGet(ppiResult);
@@ -355,31 +456,52 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       dataSource: SERIES.NFP,
       lastUpdated: new Date().toISOString()
     },
-    adp: {
-      actual: (adpData && adpData.length >= 2) ? (() => {
-        const deltaPersons = adpData[0].value - adpData[1].value;
-        const deltaK = deltaPersons / 1000;
-        return validateRange(deltaK, -500, 1000)
-          ? `${Math.round(deltaK)}K`
+    adp: (() => {
+      // 嘗試從 FRED 計算 actual/previous
+      const fredActual = (adpData && adpData.length >= 2) ? (() => {
+        const delta = adpData[0].value - adpData[1].value;
+        return validateRange(delta, -500, 1000)
+          ? `${Math.round(delta)}K`
           : null;
-      })() : null,
-      previous: (adpData && adpData.length >= 3) ? (() => {
-        const deltaPersons = adpData[1].value - adpData[2].value;
-        const deltaK = deltaPersons / 1000;
-        return validateRange(deltaK, -500, 1000)
-          ? `${Math.round(deltaK)}K`
+      })() : null;
+
+      const fredPrevious = (adpData && adpData.length >= 3) ? (() => {
+        const delta = adpData[1].value - adpData[2].value;
+        return validateRange(delta, -500, 1000)
+          ? `${Math.round(delta)}K`
           : null;
-      })() : null,
-      forecast: "130K",
-      forecastSource: "市場共識",
-      forecastAsOf: "2026-07",
-      nextRelease: dates.adp,
-      pendingRelease: adpReleasePending,
-      pendingReleaseTime: adpReleasePending ? dates.adp : null,
-      dataDate: adpData?.[0]?.date ?? null,
-      dataSource: SERIES.ADP,
-      lastUpdated: new Date().toISOString()
-    },
+      })() : null;
+
+      const fredDataDate = adpData?.[0]?.date ?? null;
+
+      // FRED 失敗時，改用人工維護資料表（Curated）
+      const curated = (!fredActual) ? getAdpFromCurated() : null;
+
+      const finalActual   = fredActual   ?? curated?.actual   ?? null;
+      const finalPrevious = fredPrevious ?? curated?.previous ?? null;
+      const finalDataDate = fredDataDate ?? curated?.dataDate ?? null;
+      // dataSource 標記：方便前端或 debug 知道資料來源
+      const adpDataSource = fredActual ? SERIES.ADP : (curated ? 'adp_curated' : 'none');
+
+      console.log('[macro] ADP source:', adpDataSource,
+        '| fredActual:', fredActual,
+        '| curatedActual:', curated?.actual,
+        '| final:', finalActual);
+
+      return {
+        actual:   finalActual,
+        previous: finalPrevious,
+        forecast: "130K",
+        forecastSource: "市場共識",
+        forecastAsOf: "2026-07",
+        nextRelease: dates.adp,
+        pendingRelease: adpReleasePending,
+        pendingReleaseTime: adpReleasePending ? dates.adp : null,
+        dataDate: finalDataDate,
+        dataSource: adpDataSource,
+        lastUpdated: new Date().toISOString()
+      };
+    })(),
     cpi: {
       actual: calcYoY(cpiData, 0, -5, 20),
       previous: calcYoY(cpiData, 1, -5, 20),
@@ -417,7 +539,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   console.log('[macro] Data status:', {
     nfp:      { count: nfpData?.length, actual: results.nfp.actual, date: nfpData?.[0]?.date },
-    adp:      { count: adpData?.length, actual: results.adp.actual, date: adpData?.[0]?.date },
+    adp:      {
+      count: adpData?.length,
+      actual: results.adp.actual,
+      date: adpData?.[0]?.date,
+      // 診斷：顯示原始 FRED 值與 delta，確認單位是否正確
+      rawV0: adpData?.[0]?.value,
+      rawV1: adpData?.[1]?.value,
+      delta: (adpData && adpData.length >= 2) ? (adpData[0].value - adpData[1].value) : null,
+    },
     cpi:      { count: cpiData?.length, actual: results.cpi.actual, date: cpiData?.[0]?.date },
     ppi:      { count: ppiData?.length, actual: results.ppi.actual, date: ppiData?.[0]?.date },
     core_ppi: { count: corePpiData?.length, actual: results.core_ppi.actual, date: corePpiData?.[0]?.date },

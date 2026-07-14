@@ -291,6 +291,35 @@ async function startServer() {
   });
 
   // 3. Sentiment: VIX and CNN Fear & Greed
+  const FRED_API_KEY_SENT_SRV = process.env.FRED_API_KEY
+    ? process.env.FRED_API_KEY.trim().replace(/^['"]|['"]$/g, '')
+    : undefined;
+
+  async function fetchSkewFromFredServer(): Promise<{ value: number; change: number } | null> {
+    if (!FRED_API_KEY_SENT_SRV) {
+      console.warn('[sentiment server] FRED_API_KEY not set, cannot fetch SKEW');
+      return null;
+    }
+    try {
+      const url = `https://api.stlouisfed.org/fred/series/observations?series_id=SKEW&api_key=${FRED_API_KEY_SENT_SRV}&file_type=json&sort_order=desc&limit=3`;
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`FRED SKEW HTTP ${res.status}`);
+      const data: any = await res.json();
+      const obs = (data?.observations ?? []).filter((o: any) => o.value !== '.');
+      if (obs.length < 1) return null;
+      const latest  = parseFloat(obs[0].value);
+      const prev    = obs.length >= 2 ? parseFloat(obs[1].value) : latest;
+      const changePct = prev !== 0 ? ((latest - prev) / prev) * 100 : 0;
+      return {
+        value:  parseFloat(latest.toFixed(2)),
+        change: parseFloat(changePct.toFixed(2)),
+      };
+    } catch (e: any) {
+      console.error('[sentiment server] FRED SKEW fetch failed:', e.message);
+      return null;
+    }
+  }
+
   app.get('/api/sentiment', async (req, res) => {
     const cacheKey = 'market_sentiment';
     const cached = cache.get(cacheKey);
@@ -330,17 +359,24 @@ async function startServer() {
         // but let's prioritize the real data.
       }
 
-      // 2. Fetch VIX and S&P 500 for additional context
-      const [vixQuote]: any = await Promise.all([
-        yahooFinance.quote('^VIX')
+      // 2. Fetch VIX, SKEW and S&P 500 for additional context
+      const [vixQuote, skewResult]: any = await Promise.all([
+        yahooFinance.quote('^VIX'),
+        fetchSkewFromFredServer().catch(() => null)
       ]);
       
-      const currentVix = vixQuote.regularMarketPrice;
+      const currentVix = vixQuote?.regularMarketPrice ?? 15;
+      const currentSkew = skewResult?.value ?? null;
       
       const resSentiment = {
         vix: {
           value: currentVix,
-          change: vixQuote.regularMarketChangePercent,
+          change: vixQuote?.regularMarketChangePercent ?? 0,
+        },
+        skew: {
+          value: currentSkew,
+          change: skewResult?.change ?? 0,
+          isLive: currentSkew !== null,
         },
         fearAndGreed: {
           value: fearAndGreed.value,
@@ -357,6 +393,104 @@ async function startServer() {
         vix: { value: 15, change: 0 },
         fearAndGreed: { value: 50, label: 'neutral', updated: new Date().toISOString() }
       });
+    }
+  });
+
+  // 3b. Taiwan Margin
+  const FALLBACK_MAINTENANCE_RATIO = 153.2; // %
+  const FALLBACK_DATE = '2026-07-14';
+
+  const TWM_FALLBACK = {
+    maintenanceRatio: FALLBACK_MAINTENANCE_RATIO,
+    maintenanceRatioIsLive: false,         // 維持率永遠來自靜態備援
+    marginBalance: 1820.1,                 // 億元
+    marginDailyChange: -12.0,              // 億元（正=增加，負=減少）
+    shortBalance: 320.5,                   // 融券餘額（億元）
+    marginShortRatio: 5.7,                 // 融資/融券比（倍）
+    date: FALLBACK_DATE,
+    isLive: false,
+  };
+
+  let twmCache: { data: any; ts: number } | null = null;
+  const TWM_CACHE_TTL = 3600000; // 1 小時
+
+  app.get('/api/taiwan-margin', async (req, res) => {
+    if (twmCache && Date.now() - twmCache.ts < TWM_CACHE_TTL) {
+      return res.json(twmCache.data);
+    }
+
+    const fetchWithTimeout = async (url: string, timeoutMs = 8000) => {
+      let timeoutId: any = null;
+      let signal: AbortSignal | undefined = undefined;
+      if (typeof AbortController !== 'undefined') {
+        const controller = new AbortController();
+        signal = controller.signal;
+        timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+      }
+      try {
+        const response = await fetch(url, { signal, headers: { 'Accept': 'application/json' } });
+        if (timeoutId) clearTimeout(timeoutId);
+        return response;
+      } catch (err) {
+        if (timeoutId) clearTimeout(timeoutId);
+        throw err;
+      }
+    };
+
+    try {
+      const url = 'https://openapi.twse.com.tw/v1/exchangeReport/MI_MARGN';
+      const response = await fetchWithTimeout(url, 8000);
+      if (!response.ok) throw new Error(`TWSE OpenAPI HTTP ${response.status}`);
+
+      const raw: any[] = await response.json();
+      if (!Array.isArray(raw) || raw.length === 0) {
+        throw new Error('TWSE OpenAPI 回傳空陣列');
+      }
+
+      const summary = raw.find((r: any) =>
+        r.StockNo === '' || r.StockNo === '合計' || !r.StockNo
+      ) ?? raw[raw.length - 1];
+
+      const parseNum = (s: string | number) =>
+        typeof s === 'number' ? s : parseFloat(String(s).replace(/,/g, '')) || 0;
+
+      const marginToday = parseNum(summary.MarginPurchaseTodayBalance);
+      const marginYest  = parseNum(summary.MarginPurchaseYesterdayBalance);
+      const marginDiff  = marginToday - marginYest;
+      const shortToday  = parseNum(summary.ShortSaleTodayBalance);
+
+      const marginBalanceBil = parseFloat((marginToday / 100_000).toFixed(1));
+      const marginChangeBil  = parseFloat((marginDiff  / 100_000).toFixed(1));
+      const shortBalanceBil  = parseFloat((shortToday  / 100_000).toFixed(1));
+
+      const msRatio = shortToday > 0
+        ? parseFloat((marginToday / shortToday).toFixed(1))
+        : null;
+
+      const dateRaw: string = summary.Date || '';
+      let isoDate = FALLBACK_DATE;
+      const parts = dateRaw.split('/');
+      if (parts.length === 3) {
+        const rocYear = parseInt(parts[0]);
+        isoDate = `${rocYear + 1911}-${parts[1].padStart(2,'0')}-${parts[2].padStart(2,'0')}`;
+      }
+
+      const results = {
+        maintenanceRatio: FALLBACK_MAINTENANCE_RATIO,
+        maintenanceRatioIsLive: false,
+        marginBalance: marginBalanceBil,
+        marginDailyChange: marginChangeBil,
+        shortBalance: shortBalanceBil,
+        marginShortRatio: msRatio,
+        date: isoDate,
+        isLive: true,
+      };
+
+      twmCache = { data: results, ts: Date.now() };
+      return res.json(results);
+    } catch (e: any) {
+      console.warn('[taiwan-margin server] TWSE fetch failed:', e.message);
+      return res.json(TWM_FALLBACK);
     }
   });
 

@@ -4,6 +4,38 @@ import { yahooFinance } from './_helpers.js';
 
 const CNN_URL = 'https://production.dataviz.cnn.io/index/fearandgreed/graphdata';
 
+// FRED API 設定（與 api/macro.ts 共用同一個 env key）
+const FRED_API_KEY_SENT = process.env.FRED_API_KEY
+  ? process.env.FRED_API_KEY.trim().replace(/^['"]|['"]$/g, '')
+  : undefined;
+
+async function fetchSkewFromFred(): Promise<{ value: number; change: number } | null> {
+  if (!FRED_API_KEY_SENT) {
+    console.warn('[sentiment] FRED_API_KEY not set, cannot fetch SKEW');
+    return null;
+  }
+  try {
+    // FRED series SKEW = CBOE SKEW Index，每日更新
+    const url = `https://api.stlouisfed.org/fred/series/observations?series_id=SKEW&api_key=${FRED_API_KEY_SENT}&file_type=json&sort_order=desc&limit=3`;
+    const res = await fetchWithTimeout(url, {}, 7000);
+    if (!res.ok) throw new Error(`FRED SKEW HTTP ${res.status}`);
+    const data: any = await res.json();
+    const obs = (data?.observations ?? []).filter((o: any) => o.value !== '.');
+    if (obs.length < 1) return null;
+    const latest  = parseFloat(obs[0].value);
+    const prev    = obs.length >= 2 ? parseFloat(obs[1].value) : latest;
+    // 計算日變化（百分比）
+    const changePct = prev !== 0 ? ((latest - prev) / prev) * 100 : 0;
+    return {
+      value:  parseFloat(latest.toFixed(2)),
+      change: parseFloat(changePct.toFixed(2)),
+    };
+  } catch (e) {
+    console.error('[sentiment] FRED SKEW fetch failed:', (e as Error).message);
+    return null;
+  }
+}
+
 async function fetchWithTimeout(url: string, init?: RequestInit, timeoutMs = 5000) {
   let timeoutId: any = null;
   let signal: AbortSignal | undefined = undefined;
@@ -102,24 +134,31 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method === 'OPTIONS') return res.status(200).end();
 
   try {
-    const vixPromise = yahooFinance.quote('^VIX').catch(() => null);
-    // Try CNN first, then fallback
+    const vixPromise  = yahooFinance.quote('^VIX').catch(() => null);
+    const skewPromise = fetchSkewFromFred().catch(() => null);
     const cnnDataPromise = getCNNData();
 
-    const [vixQuote, cnnData] = await Promise.all([vixPromise, cnnDataPromise]);
+    const [vixQuote, skewResult, cnnData] = await Promise.all([vixPromise, skewPromise, cnnDataPromise]);
     
     let fearAndGreed: any = cnnData;
     if (!fearAndGreed) {
       fearAndGreed = await calculateSyntheticSentiment();
     }
 
-    const vixPrice = (vixQuote as any)?.regularMarketPrice ?? 15;
+    const vixPrice  = (vixQuote as any)?.regularMarketPrice ?? 15;
     const vixChange = (vixQuote as any)?.regularMarketChangePercent ?? 0;
+    const skewPrice = skewResult?.value ?? null;
+    const skewChange = skewResult?.change ?? 0;
 
     res.json({
       vix: { 
         value: vixPrice, 
         change: vixChange 
+      },
+      skew: {
+        value: skewPrice,
+        change: skewChange,
+        isLive: skewPrice !== null,
       },
       fearAndGreed: {
         ...fearAndGreed,
