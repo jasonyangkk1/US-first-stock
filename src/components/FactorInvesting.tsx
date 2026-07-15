@@ -383,6 +383,31 @@ export default function FactorInvesting({ onJumpToAnalysis }: { onJumpToAnalysis
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
             {sectorPerf.map((s) => {
               const isPositive = s.avgChange1D >= 0;
+
+              // 每個訊號對應的產業實況提示（供應鏈視角）
+              const industryHints: Record<string, { tags: string[]; color: string }> = {
+                supply_surge: {
+                  tags: ['漲價週期啟動', 'Lead Time 拉長', '客戶搶貨備料', '原廠優先分配'],
+                  color: 'text-emerald-400/60 bg-emerald-400/5 border-emerald-400/20',
+                },
+                accumulating: {
+                  tags: ['需求能見度提升', '市場預期缺料', '訂單能見度增加', '資金提前卡位'],
+                  color: 'text-blue-400/60 bg-blue-400/5 border-blue-400/20',
+                },
+                balanced: {
+                  tags: ['漲降價壓力均衡', '交期穩定', '等待訂單週期啟動', '觀察庫存水位'],
+                  color: 'text-text-dim/50 bg-white/3 border-white/10',
+                },
+                distributing: {
+                  tags: ['買方延後拉貨', '短期需求降溫', '庫存堆積中', '等待下輪拉貨'],
+                  color: 'text-orange-400/60 bg-orange-400/5 border-orange-400/20',
+                },
+                demand_collapse: {
+                  tags: ['砍價競爭加劇', 'Lead Time 縮短', '廠商降稼動率', '庫存去化壓力大'],
+                  color: 'text-rose-400/60 bg-rose-400/5 border-rose-400/20',
+                },
+              };
+
               const signalColors: Record<string, string> = {
                 supply_surge:    'border-emerald-400/40 bg-emerald-400/5',
                 accumulating:    'border-blue-400/30 bg-blue-400/5',
@@ -424,7 +449,29 @@ export default function FactorInvesting({ onJumpToAnalysis }: { onJumpToAnalysis
                     {s.signalLabel}
                   </div>
                   <p className="text-[9px] text-text-dim/70 leading-relaxed mb-2">{s.signalDesc}</p>
-                  
+
+                  {/* 產業實況提示標籤 */}
+                  {industryHints[s.supplyDemandSignal] && (
+                    <div className="mb-2">
+                      <div className="flex items-center gap-1 mb-1">
+                        <span className="text-[8px] text-text-dim/40 font-mono uppercase tracking-wide">
+                          產業實況
+                        </span>
+                        <div className="flex-1 h-px bg-border-subtle/20" />
+                      </div>
+                      <div className="flex flex-wrap gap-1">
+                        {industryHints[s.supplyDemandSignal].tags.map((tag) => (
+                          <span
+                            key={tag}
+                            className={`text-[8px] px-1.5 py-0.5 rounded border font-mono ${industryHints[s.supplyDemandSignal].color}`}
+                          >
+                            {tag}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
                   {/* 個股漲跌小圓點 */}
                   <div className="flex items-center gap-1 flex-wrap">
                     {s.stocks.map((stock: any) => (
@@ -472,9 +519,12 @@ export default function FactorInvesting({ onJumpToAnalysis }: { onJumpToAnalysis
         <div className="mt-3 p-3 bg-card-bg/50 rounded-xl border border-border-subtle/30">
           <p className="text-[9px] text-text-dim/50 leading-relaxed">
             📌 供需訊號基於代表股今日漲跌幅均值與 50 日均線位置。
-            <span className="text-emerald-400/70"> 🔥 供不應求</span>（類群均漲 &gt;2%，多數在均線上）→
-            <span className="text-rose-400/70"> ❄️ 供過於求</span>（類群均跌 &gt;2%，多數跌破均線）。
-            僅供輔助判斷，非投資建議。
+            <span className="text-emerald-400/70"> 🔥 供不應求</span>（均漲 &gt;2% · 多數在均線上）→
+            <span className="text-blue-400/70"> 📈 積極建倉</span>（均漲 &gt;0.5% · 技術面健康）→
+            <span className="text-text-dim/60"> ⚖️ 供需均衡</span>（多空力道相當）→
+            <span className="text-orange-400/70"> 📉 出貨消化</span>（均跌 &gt;0.5% · 技術面轉弱）→
+            <span className="text-rose-400/70"> ❄️ 供過於求</span>（均跌 &gt;2% · 多數跌破均線）。
+            「產業實況」標籤為對應供應鏈現象的參考提示，僅供輔助判斷，非投資建議。
           </p>
         </div>
       </div>

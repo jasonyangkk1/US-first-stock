@@ -307,20 +307,128 @@ async function startServer() {
     }
   }
 
-  // ── 台股融資靜態備援（TWSE 無直接提供整戶維持率 API，每週手動更新）──
-  const FALLBACK_MAINTENANCE_RATIO = 153.2; // %
-  const FALLBACK_DATE = '2026-07-14';
-
+  // ── 台股融資靜態備援（TWSE API 完全失敗時的最終保底）──
+  // 每週手動更新一次即可（正常情況下不會用到，動態 API 已覆蓋）
   const TWM_FALLBACK = {
-    maintenanceRatio: FALLBACK_MAINTENANCE_RATIO,
-    maintenanceRatioIsLive: false,         // 維持率永遠來自靜態備援
-    marginBalance: 1820.1,                 // 億元
-    marginDailyChange: -12.0,              // 億元（正=增加，負=減少）
-    shortBalance: 320.5,                   // 融券餘額（億元）
-    marginShortRatio: 5.7,                 // 融資/融券比（倍）
-    date: FALLBACK_DATE,
+    maintenanceRatio: 156.27,      // 整戶融資維持率（%）← 7/14 實際值
+    maintenanceRatioIsLive: false,
+    marginBalance: 1820.1,         // 融資餘額（億股）
+    marginDailyChange: -12.0,      // 單日增減（億股）
+    shortBalance: 320.5,           // 融券餘額（億股）
+    marginShortRatio: 5.7,         // 融資/融券比（倍）
+    date: '2026-07-14',
     isLive: false,
   };
+
+  // 民國日期字串轉 ISO（'115/07/14' → '2026-07-14'）
+  function rocDateToIso(dateRaw: string): string | null {
+    const parts = dateRaw.split('/');
+    if (parts.length !== 3) return null;
+    const year = parseInt(parts[0]);
+    if (isNaN(year) || year < 100) return null;
+    return `${year + 1911}-${parts[1].padStart(2, '0')}-${parts[2].padStart(2, '0')}`;
+  }
+
+  // 產生候選日期序列（台灣時間，往前最多 lookback 個日曆日，跳過週末）
+  function getCandidateDates(lookback = 6): string[] {
+    const nowUtc = new Date();
+    const tpeMs  = nowUtc.getTime() + 8 * 60 * 60 * 1000;
+    const tpe    = new Date(tpeMs);
+    const tpeHour = tpe.getUTCHours();
+
+    // 台灣 18:00 前，當日資料未公布 → 從昨天開始
+    // 台灣 18:00 後，當日資料已公布 → 從今天開始
+    const startOffset = tpeHour < 18 ? 1 : 0;
+
+    const candidates: string[] = [];
+    for (let i = startOffset; i <= startOffset + lookback; i++) {
+      const d = new Date(tpeMs - i * 86_400_000);
+      const dow = d.getUTCDay(); // 0=Sun, 6=Sat
+      if (dow === 0 || dow === 6) continue; // 跳過週末
+      const y  = d.getUTCFullYear();
+      const mo = String(d.getUTCMonth() + 1).padStart(2, '0');
+      const dd = String(d.getUTCDate()).padStart(2, '0');
+      candidates.push(`${y}${mo}${dd}`);
+      if (candidates.length >= 4) break; // 最多嘗試 4 個交易日
+    }
+    return candidates;
+  }
+
+  // 從 TWSE MI_MARGN selectType=RM 取得整戶融資維持率（%）
+  async function fetchMaintenanceRatioForDate(dateStr: string, fetchWithTimeout: any): Promise<{
+    ratio: number;
+    isoDate: string;
+  } | null> {
+    try {
+      const url = `https://www.twse.com.tw/rwd/zh/marginTrading/MI_MARGN?date=${dateStr}&selectType=RM&response=json`;
+      const res = await fetchWithTimeout(url, 7000);
+      if (!res.ok) return null;
+
+      const json: any = await res.json();
+      if (json?.stat !== 'OK' || !Array.isArray(json?.data) || json.data.length === 0) {
+        return null;
+      }
+
+      const row = json.data[json.data.length - 1];
+      const ratioStr  = String(row[3] ?? '').replace(/,/g, '');
+      const ratio     = parseFloat(ratioStr);
+      const isoDate   = rocDateToIso(String(row[0] ?? '')) ?? dateStr.replace(/(\d{4})(\d{2})(\d{2})/, '$1-$2-$3');
+
+      if (isNaN(ratio) || ratio < 50 || ratio > 500) return null;
+
+      return { ratio, isoDate };
+    } catch {
+      return null;
+    }
+  }
+
+  // 從 TWSE OpenAPI v1 取得融資股數（餘額、增減、融券等）
+  async function fetchMarginBalance(fetchWithTimeout: any): Promise<{
+    marginBalance: number;
+    marginDailyChange: number;
+    shortBalance: number;
+    marginShortRatio: number | null;
+    balanceDate: string | null;
+  } | null> {
+    try {
+      const url = 'https://openapi.twse.com.tw/v1/exchangeReport/MI_MARGN';
+      const res = await fetchWithTimeout(url, 8000);
+      if (!res.ok) return null;
+
+      const raw: any[] = await res.json();
+      if (!Array.isArray(raw) || raw.length === 0) return null;
+
+      const summary =
+        raw.find((r: any) => !r.StockNo || r.StockNo === '合計') ??
+        raw[raw.length - 1];
+
+      const parseNum = (s: string | number) =>
+        typeof s === 'number' ? s : parseFloat(String(s).replace(/,/g, '')) || 0;
+
+      const marginToday = parseNum(summary.MarginPurchaseTodayBalance);    // 千股
+      const marginYest  = parseNum(summary.MarginPurchaseYesterdayBalance); // 千股
+      const shortToday  = parseNum(summary.ShortSaleTodayBalance);          // 千股
+
+      const marginBalanceBil = parseFloat((marginToday / 100_000).toFixed(1));
+      const marginChangeBil  = parseFloat(((marginToday - marginYest) / 100_000).toFixed(1));
+      const shortBalanceBil  = parseFloat((shortToday / 100_000).toFixed(1));
+      const msRatio = shortToday > 0
+        ? parseFloat((marginToday / shortToday).toFixed(1))
+        : null;
+
+      const balanceDate = rocDateToIso(String(summary.Date || ''));
+
+      return {
+        marginBalance: marginBalanceBil,
+        marginDailyChange: marginChangeBil,
+        shortBalance: shortBalanceBil,
+        marginShortRatio: msRatio,
+        balanceDate,
+      };
+    } catch {
+      return null;
+    }
+  }
 
   async function fetchTwseMarginDataServer(): Promise<any> {
     const fetchWithTimeout = async (url: string, timeoutMs = 8000) => {
@@ -342,51 +450,36 @@ async function startServer() {
     };
 
     try {
-      const url = 'https://openapi.twse.com.tw/v1/exchangeReport/MI_MARGN';
-      const response = await fetchWithTimeout(url, 8000);
-      if (!response.ok) throw new Error(`TWSE OpenAPI HTTP ${response.status}`);
+      const candidates = getCandidateDates(6);
+      console.log('[sentiment server] TWSE RM candidates:', candidates);
 
-      const raw: any[] = await response.json();
-      if (!Array.isArray(raw) || raw.length === 0) {
-        throw new Error('TWSE OpenAPI 回傳空陣列');
+      let ratioResult: { ratio: number; isoDate: string } | null = null;
+      for (const dateStr of candidates) {
+        ratioResult = await fetchMaintenanceRatioForDate(dateStr, fetchWithTimeout);
+        if (ratioResult) {
+          console.log(`[sentiment server] TWSE RM OK: ${ratioResult.ratio}% @ ${ratioResult.isoDate} (dateStr=${dateStr})`);
+          break;
+        }
       }
 
-      const summary = raw.find((r: any) =>
-        r.StockNo === '' || r.StockNo === '合計' || !r.StockNo
-      ) ?? raw[raw.length - 1];
+      const balanceResult = await fetchMarginBalance(fetchWithTimeout);
 
-      const parseNum = (s: string | number) =>
-        typeof s === 'number' ? s : parseFloat(String(s).replace(/,/g, '')) || 0;
-
-      const marginToday = parseNum(summary.MarginPurchaseTodayBalance);
-      const marginYest  = parseNum(summary.MarginPurchaseYesterdayBalance);
-      const marginDiff  = marginToday - marginYest;
-      const shortToday  = parseNum(summary.ShortSaleTodayBalance);
-
-      const marginBalanceBil = parseFloat((marginToday / 100_000).toFixed(1));
-      const marginChangeBil  = parseFloat((marginDiff  / 100_000).toFixed(1));
-      const shortBalanceBil  = parseFloat((shortToday  / 100_000).toFixed(1));
-
-      const msRatio = shortToday > 0
-        ? parseFloat((marginToday / shortToday).toFixed(1))
-        : null;
-
-      const dateRaw: string = summary.Date || '';
-      let isoDate = FALLBACK_DATE;
-      const parts = dateRaw.split('/');
-      if (parts.length === 3) {
-        const rocYear = parseInt(parts[0]);
-        isoDate = `${rocYear + 1911}-${parts[1].padStart(2,'0')}-${parts[2].padStart(2,'0')}`;
+      if (!ratioResult && !balanceResult) {
+        console.warn('[sentiment server] TWSE: both RM and balance fetch failed');
+        return TWM_FALLBACK;
       }
 
       return {
-        maintenanceRatio: FALLBACK_MAINTENANCE_RATIO,
-        maintenanceRatioIsLive: false,
-        marginBalance: marginBalanceBil,
-        marginDailyChange: marginChangeBil,
-        shortBalance: shortBalanceBil,
-        marginShortRatio: msRatio,
-        date: isoDate,
+        maintenanceRatio:       ratioResult?.ratio          ?? TWM_FALLBACK.maintenanceRatio,
+        maintenanceRatioIsLive: ratioResult != null,
+        maintenanceRatioDate:   ratioResult?.isoDate         ?? null,
+
+        marginBalance:          balanceResult?.marginBalance      ?? TWM_FALLBACK.marginBalance,
+        marginDailyChange:      balanceResult?.marginDailyChange  ?? TWM_FALLBACK.marginDailyChange,
+        shortBalance:           balanceResult?.shortBalance       ?? TWM_FALLBACK.shortBalance,
+        marginShortRatio:       balanceResult?.marginShortRatio   ?? TWM_FALLBACK.marginShortRatio,
+
+        date:   ratioResult?.isoDate ?? balanceResult?.balanceDate ?? TWM_FALLBACK.date,
         isLive: true,
       };
     } catch (e: any) {
@@ -2368,6 +2461,213 @@ async function startServer() {
     result.sort((a, b) => a.date.localeCompare(b.date));
     return result.slice(-13);
   }
+
+  // ── Sector Performance API ──────────────────────────────────────────────────
+  const SECTOR_REPRESENTATIVES: Record<string, string[]> = {
+    'GPU / 加速運算':        ['NVDA', 'AMD'],
+    '光通訊 / Data Center':  ['COHR', 'ANET'],
+    '記憶體 / 存儲':         ['MU', 'WDC'],
+    '電力與散熱':            ['VRT', 'SMCI'],
+    '客製化 AI 晶片':        ['MRVL', 'KLAC'],
+    '邊緣 AI / 工業':        ['NXPI', 'ADI'],
+    '雲端 / AI 軟體':        ['MSFT', 'AMZN'],
+    'AI 機器人':             ['ISRG', 'ABB'],
+    '衛星通訊':              ['ASTS', 'RKLB'],
+    '核能 / 潔淨電力':       ['CEG', 'VST'],
+    'CPU / 系統算力':        ['AMD', 'INTC'],
+  };
+
+  interface SectorData {
+    sector: string;
+    avgChange1D: number;
+    avgChange5D: number | null;
+    aboveMa50Count: number;
+    totalCount: number;
+    supplyDemandSignal: 'supply_surge' | 'accumulating' | 'balanced' | 'distributing' | 'demand_collapse';
+    signalLabel: string;
+    signalDesc: string;
+    stocks: Array<{
+      symbol: string;
+      change1D: number;
+      aboveMa50: boolean;
+      distanceFromHigh: number;
+    }>;
+    isStatic?: boolean;
+  }
+
+  function makeStaticSector(sector: string, symbols: string[]): SectorData {
+    return {
+      sector,
+      avgChange1D: 0, avgChange5D: null,
+      aboveMa50Count: Math.ceil(symbols.length / 2),
+      totalCount: symbols.length,
+      supplyDemandSignal: 'balanced',
+      signalLabel: '⚖️ 供需均衡',
+      signalDesc: '即時數據暫時無法取得，顯示預設狀態。請稍後重新整理。',
+      stocks: symbols.map(sym => ({
+        symbol: sym, change1D: 0, aboveMa50: true, distanceFromHigh: -10,
+      })),
+      isStatic: true,
+    };
+  }
+
+  const STATIC_FALLBACK_SECTORS: SectorData[] = Object.entries(SECTOR_REPRESENTATIVES)
+    .map(([sector, symbols]) => makeStaticSector(sector, symbols));
+
+  async function fetchQuoteWithTimeout(symbol: string, timeoutMs = 6000): Promise<{
+    symbol: string;
+    changePercent: number;
+    price: number;
+    ma50: number | null;
+    high52w: number | null;
+  } | null> {
+    let timerId: ReturnType<typeof setTimeout> | null = null;
+    const timeoutPromise = new Promise<null>(resolve => {
+      timerId = setTimeout(() => resolve(null), timeoutMs);
+    });
+
+    const fetchPromise = (async () => {
+      try {
+        const q: any = await yahooFinance.quote(symbol);
+        if (!q?.regularMarketPrice) return null;
+        if (timerId) clearTimeout(timerId);
+        return {
+          symbol,
+          changePercent: q.regularMarketChangePercent ?? 0,
+          price: q.regularMarketPrice,
+          ma50: q.fiftyDayAverage ?? null,
+          high52w: q.fiftyTwoWeekHigh ?? null,
+        };
+      } catch {
+        if (timerId) clearTimeout(timerId);
+        return null;
+      }
+    })();
+
+    const result = await Promise.race([fetchPromise, timeoutPromise]);
+    if (timerId) clearTimeout(timerId);
+    return result;
+  }
+
+  function determineSupplyDemand(avgChange1D: number, aboveMa50Pct: number): {
+    signal: SectorData['supplyDemandSignal'];
+    label: string;
+    desc: string;
+  } {
+    if (avgChange1D > 2.0 && aboveMa50Pct >= 0.6) {
+      return {
+        signal: 'supply_surge', label: '🔥 供不應求',
+        desc: '買盤強勁，需求超越供給，機構正在積極加倉。',
+      };
+    }
+    if (avgChange1D > 0.5 && aboveMa50Pct >= 0.5) {
+      return {
+        signal: 'accumulating', label: '📈 積極建倉',
+        desc: '資金流入明顯，市場預期未來供給缺口，長線資金正在佈局。',
+      };
+    }
+    if (avgChange1D < -2.0 && aboveMa50Pct < 0.4) {
+      return {
+        signal: 'demand_collapse', label: '❄️ 供過於求',
+        desc: '需求萎縮，供給過剩，廠商積極削減庫存，估值修正風險高。',
+      };
+    }
+    if (avgChange1D < -0.5 && aboveMa50Pct < 0.5) {
+      return {
+        signal: 'distributing', label: '📉 出貨消化',
+        desc: '機構在相對高位分散持股，庫存去化中，需觀察承接買盤。',
+      };
+    }
+    return {
+      signal: 'balanced', label: '⚖️ 供需均衡',
+      desc: '多空力道相當，市場處於觀望整固階段，等待明確催化劑。',
+    };
+  }
+
+  let sectorCache: { data: SectorData[]; ts: number } | null = null;
+  const SECTOR_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+
+  app.get('/api/sector-performance', async (req, res) => {
+    try {
+      if (sectorCache && Date.now() - sectorCache.ts < SECTOR_CACHE_TTL) {
+        return res.json(sectorCache.data);
+      }
+
+      const allSymbols = [...new Set(Object.values(SECTOR_REPRESENTATIVES).flat())];
+      const BATCH_SIZE = 3;
+      const stockMap: Record<string, any> = {};
+
+      for (let i = 0; i < allSymbols.length; i += BATCH_SIZE) {
+        const batch = allSymbols.slice(i, i + BATCH_SIZE);
+        const results = await Promise.allSettled(
+          batch.map(sym => fetchQuoteWithTimeout(sym, 5000))
+        );
+        results.forEach((r, idx) => {
+          if (r.status === 'fulfilled' && r.value) {
+            stockMap[batch[idx]] = r.value;
+          }
+        });
+        if (i + BATCH_SIZE < allSymbols.length) {
+          await new Promise(resolve => setTimeout(resolve, 200));
+        }
+      }
+
+      const successCount = Object.keys(stockMap).length;
+      console.log(`[sector-performance server] Fetched ${successCount}/${allSymbols.length} symbols`);
+
+      if (successCount === 0) {
+        console.warn('[sector-performance server] All fetches failed, returning fallback');
+        return res.json(STATIC_FALLBACK_SECTORS);
+      }
+
+      const sectorData: SectorData[] = Object.entries(SECTOR_REPRESENTATIVES).map(([sector, symbols]) => {
+        const validData = symbols.map(s => stockMap[s]).filter(Boolean);
+
+        if (validData.length === 0) {
+          return makeStaticSector(sector, symbols);
+        }
+
+        const stockDetails = validData.map((d: any) => {
+          const aboveMa50 = d.ma50 != null && d.ma50 > 0 && d.price > d.ma50;
+          const distFromHigh = d.high52w != null && d.high52w > 0
+            ? ((d.price - d.high52w) / d.high52w) * 100
+            : 0;
+          return {
+            symbol: d.symbol,
+            change1D: parseFloat(d.changePercent.toFixed(2)),
+            aboveMa50,
+            distanceFromHigh: parseFloat(distFromHigh.toFixed(1)),
+          };
+        });
+
+        const avgChange1D = stockDetails.reduce((s, i) => s + i.change1D, 0) / stockDetails.length;
+        const aboveMa50Count = stockDetails.filter(d => d.aboveMa50).length;
+        const aboveMa50Pct = aboveMa50Count / stockDetails.length;
+
+        const { signal, label, desc } = determineSupplyDemand(avgChange1D, aboveMa50Pct);
+
+        return {
+          sector,
+          avgChange1D: parseFloat(avgChange1D.toFixed(2)),
+          avgChange5D: null,
+          aboveMa50Count,
+          totalCount: stockDetails.length,
+          supplyDemandSignal: signal,
+          signalLabel: label,
+          signalDesc: desc,
+          stocks: stockDetails,
+        };
+      });
+
+      const sorted = sectorData.sort((a, b) => b.avgChange1D - a.avgChange1D);
+      sectorCache = { data: sorted, ts: Date.now() };
+      return res.json(sorted);
+
+    } catch (err: any) {
+      console.error('[sector-performance server] Unexpected error:', err?.message ?? err);
+      return res.json(STATIC_FALLBACK_SECTORS);
+    }
+  });
 
   app.get('/api/structural', async (req, res) => {
     // GET /api/structural?debug=1 → 回傳診斷資訊，不受 cache 影響

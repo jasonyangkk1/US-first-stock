@@ -3660,7 +3660,8 @@ export default function MarketSentiment() {
             {/* 指標 3：Taiwan Margin */}
             {(() => {
               const twRatio      = sentiment?.taiwanMargin?.maintenanceRatio ?? 153.2;
-              const twRatioLive  = sentiment?.taiwanMargin?.maintenanceRatioIsLive ?? false; // 永遠 false（TWSE 無直接 API）
+              const twRatioLive  = sentiment?.taiwanMargin?.maintenanceRatioIsLive ?? false;
+              const twRatioDate  = sentiment?.taiwanMargin?.maintenanceRatioDate ?? '';
               const twBalance    = sentiment?.taiwanMargin?.marginBalance ?? 1820.1;         // 億股
               const twChange     = sentiment?.taiwanMargin?.marginDailyChange ?? -12.0;      // 億股
               const twShort      = sentiment?.taiwanMargin?.shortBalance ?? 320.5;           // 融券億股
@@ -3735,9 +3736,15 @@ export default function MarketSentiment() {
                         </span>
                       </div>
                       <div className="flex justify-between items-center py-1">
-                        <span className="text-text-dim">維持率資料來源:</span>
-                        <span className="text-[9px] text-orange-400/70 font-mono">
-                          靜態備援（TWSE 無直接 API）
+                        <span className="text-text-dim">維持率資料:</span>
+                        <span className={`text-[9px] font-mono font-bold px-1.5 py-0.5 rounded ${
+                          twRatioLive
+                            ? 'text-emerald-400 bg-emerald-500/10'
+                            : 'text-orange-400/70 bg-orange-500/5'
+                        }`}>
+                          {twRatioLive
+                            ? `TWSE Live · ${twRatioDate}`
+                            : '靜態備援（API 失敗）'}
                         </span>
                       </div>
                       <div className="pt-1.5 border-t border-border-subtle/50 text-[10px]">

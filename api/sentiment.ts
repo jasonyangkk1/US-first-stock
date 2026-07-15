@@ -4,10 +4,11 @@ import { yahooFinance } from './_helpers.js';
 
 const CNN_URL = 'https://production.dataviz.cnn.io/index/fearandgreed/graphdata';
 
-// ── 台股融資靜態備援（TWSE 無直接提供整戶維持率 API，每週手動更新）──
+// ── 台股融資靜態備援（TWSE API 完全失敗時的最終保底）──
+// 每週手動更新一次即可（正常情況下不會用到，動態 API 已覆蓋）
 const TW_MARGIN_FALLBACK = {
-  maintenanceRatio: 153.2,       // 整戶融資維持率（%），每週手動更新
-  maintenanceRatioIsLive: false, // 永遠為 false（TWSE 無直接 API）
+  maintenanceRatio: 156.27,      // 整戶融資維持率（%）← 7/14 實際值
+  maintenanceRatioIsLive: false,
   marginBalance: 1820.1,         // 融資餘額（億股）
   marginDailyChange: -12.0,      // 單日增減（億股）
   shortBalance: 320.5,           // 融券餘額（億股）
@@ -16,19 +17,88 @@ const TW_MARGIN_FALLBACK = {
   isLive: false,
 };
 
-async function fetchTwseMarginData() {
-  try {
-    // TWSE OpenAPI v1：不需日期參數，直接回傳最新一日資料
-    const url = 'https://openapi.twse.com.tw/v1/exchangeReport/MI_MARGN';
-    const res = await fetchWithTimeout(url, { headers: { Accept: 'application/json' } }, 8000);
-    if (!res.ok) throw new Error(`TWSE OpenAPI HTTP ${res.status}`);
+// 民國日期字串轉 ISO（'115/07/14' → '2026-07-14'）
+function rocDateToIso(dateRaw: string): string | null {
+  const parts = dateRaw.split('/');
+  if (parts.length !== 3) return null;
+  const year = parseInt(parts[0]);
+  if (isNaN(year) || year < 100) return null;
+  return `${year + 1911}-${parts[1].padStart(2, '0')}-${parts[2].padStart(2, '0')}`;
+}
 
-    const raw: any[] = await res.json();
-    if (!Array.isArray(raw) || raw.length === 0) {
-      throw new Error('TWSE 回傳空陣列（假日或盤後尚未公布）');
+// 產生候選日期序列（台灣時間，往前最多 lookback 個日曆日，跳過週末）
+function getCandidateDates(lookback = 6): string[] {
+  const nowUtc = new Date();
+  const tpeMs  = nowUtc.getTime() + 8 * 60 * 60 * 1000;
+  const tpe    = new Date(tpeMs);
+  const tpeHour = tpe.getUTCHours();
+
+  // 台灣 18:00 前，當日資料未公布 → 從昨天開始
+  // 台灣 18:00 後，當日資料已公布 → 從今天開始
+  const startOffset = tpeHour < 18 ? 1 : 0;
+
+  const candidates: string[] = [];
+  for (let i = startOffset; i <= startOffset + lookback; i++) {
+    const d = new Date(tpeMs - i * 86_400_000);
+    const dow = d.getUTCDay(); // 0=Sun, 6=Sat
+    if (dow === 0 || dow === 6) continue; // 跳過週末
+    const y  = d.getUTCFullYear();
+    const mo = String(d.getUTCMonth() + 1).padStart(2, '0');
+    const dd = String(d.getUTCDate()).padStart(2, '0');
+    candidates.push(`${y}${mo}${dd}`);
+    if (candidates.length >= 4) break; // 最多嘗試 4 個交易日
+  }
+  return candidates;
+}
+
+// 從 TWSE MI_MARGN selectType=RM 取得整戶融資維持率（%）
+// 直接回傳維持率數值與對應日期，或 null（該日無資料）
+async function fetchMaintenanceRatioForDate(dateStr: string): Promise<{
+  ratio: number;
+  isoDate: string;
+} | null> {
+  try {
+    const url = `https://www.twse.com.tw/rwd/zh/marginTrading/MI_MARGN?date=${dateStr}&selectType=RM&response=json`;
+    const res = await fetchWithTimeout(url, { headers: { Accept: 'application/json' } }, 7000);
+    if (!res.ok) return null;
+
+    const json: any = await res.json();
+    // stat=OK 且 data 非空才視為有資料
+    if (json?.stat !== 'OK' || !Array.isArray(json?.data) || json.data.length === 0) {
+      return null;
     }
 
-    // 找合計列（StockNo 為空字串或 '合計'）
+    // 取最後一列（最新日期）
+    const row = json.data[json.data.length - 1];
+    // 欄位：[日期, 擔保品現值(千元), 融資金額(千元), 整戶融資維持率(%)]
+    const ratioStr  = String(row[3] ?? '').replace(/,/g, '');
+    const ratio     = parseFloat(ratioStr);
+    const isoDate   = rocDateToIso(String(row[0] ?? '')) ?? dateStr.replace(/(\d{4})(\d{2})(\d{2})/, '$1-$2-$3');
+
+    if (isNaN(ratio) || ratio < 50 || ratio > 500) return null; // 合理範圍檢核
+
+    return { ratio, isoDate };
+  } catch {
+    return null;
+  }
+}
+
+// 從 TWSE OpenAPI v1 取得融資股數（餘額、增減、融券等）
+async function fetchMarginBalance(): Promise<{
+  marginBalance: number;
+  marginDailyChange: number;
+  shortBalance: number;
+  marginShortRatio: number | null;
+  balanceDate: string | null;
+} | null> {
+  try {
+    const url = 'https://openapi.twse.com.tw/v1/exchangeReport/MI_MARGN';
+    const res = await fetchWithTimeout(url, { headers: { Accept: 'application/json' } }, 8000);
+    if (!res.ok) return null;
+
+    const raw: any[] = await res.json();
+    if (!Array.isArray(raw) || raw.length === 0) return null;
+
     const summary =
       raw.find((r: any) => !r.StockNo || r.StockNo === '合計') ??
       raw[raw.length - 1];
@@ -40,28 +110,65 @@ async function fetchTwseMarginData() {
     const marginYest  = parseNum(summary.MarginPurchaseYesterdayBalance); // 千股
     const shortToday  = parseNum(summary.ShortSaleTodayBalance);          // 千股
 
-    const marginBalanceBil = parseFloat((marginToday / 100_000).toFixed(1)); // 億股
+    const marginBalanceBil = parseFloat((marginToday / 100_000).toFixed(1));
     const marginChangeBil  = parseFloat(((marginToday - marginYest) / 100_000).toFixed(1));
     const shortBalanceBil  = parseFloat((shortToday / 100_000).toFixed(1));
     const msRatio = shortToday > 0
       ? parseFloat((marginToday / shortToday).toFixed(1))
       : null;
 
-    // 日期：民國年/月/日 → YYYY-MM-DD
-    const dateRaw: string = summary.Date || '';
-    const parts = dateRaw.split('/');
-    const isoDate = parts.length === 3
-      ? `${parseInt(parts[0]) + 1911}-${parts[1].padStart(2, '0')}-${parts[2].padStart(2, '0')}`
-      : TW_MARGIN_FALLBACK.date;
+    const balanceDate = rocDateToIso(String(summary.Date || ''));
 
     return {
-      maintenanceRatio: TW_MARGIN_FALLBACK.maintenanceRatio, // 靜態備援
-      maintenanceRatioIsLive: false,
       marginBalance: marginBalanceBil,
       marginDailyChange: marginChangeBil,
       shortBalance: shortBalanceBil,
       marginShortRatio: msRatio,
-      date: isoDate,
+      balanceDate,
+    };
+  } catch {
+    return null;
+  }
+}
+
+// 主函數：並行取得維持率（帶日期回溯）+ 融資股數
+async function fetchTwseMarginData() {
+  try {
+    const candidates = getCandidateDates(6);
+    console.log('[sentiment] TWSE RM candidates:', candidates);
+
+    // ── 維持率：依序嘗試候選日期，找到第一個有資料的就停止 ──
+    let ratioResult: { ratio: number; isoDate: string } | null = null;
+    for (const dateStr of candidates) {
+      ratioResult = await fetchMaintenanceRatioForDate(dateStr);
+      if (ratioResult) {
+        console.log(`[sentiment] TWSE RM OK: ${ratioResult.ratio}% @ ${ratioResult.isoDate} (dateStr=${dateStr})`);
+        break;
+      }
+    }
+
+    // ── 融資股數（餘額/增減）：用 openapi 無日期版本 ──
+    const balanceResult = await fetchMarginBalance();
+
+    if (!ratioResult && !balanceResult) {
+      console.warn('[sentiment] TWSE: both RM and balance fetch failed');
+      return null;
+    }
+
+    return {
+      // 維持率（動態，最多 lag 1 個交易日）
+      maintenanceRatio:       ratioResult?.ratio          ?? TW_MARGIN_FALLBACK.maintenanceRatio,
+      maintenanceRatioIsLive: ratioResult != null,         // true = 動態取得
+      maintenanceRatioDate:   ratioResult?.isoDate         ?? null,
+
+      // 融資股數（動態）
+      marginBalance:          balanceResult?.marginBalance      ?? TW_MARGIN_FALLBACK.marginBalance,
+      marginDailyChange:      balanceResult?.marginDailyChange  ?? TW_MARGIN_FALLBACK.marginDailyChange,
+      shortBalance:           balanceResult?.shortBalance       ?? TW_MARGIN_FALLBACK.shortBalance,
+      marginShortRatio:       balanceResult?.marginShortRatio   ?? TW_MARGIN_FALLBACK.marginShortRatio,
+
+      // 日期：優先用維持率日期，次用融資餘額日期
+      date:   ratioResult?.isoDate ?? balanceResult?.balanceDate ?? TW_MARGIN_FALLBACK.date,
       isLive: true,
     };
   } catch (e) {

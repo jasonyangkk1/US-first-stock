@@ -1,287 +1,190 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { yahooFinance } from './_helpers.js';
 
-// 每個類群只抓 2-3 個代表股（避免超時）
+// 每個類群只抓 2 個代表股（減少並發量，避免 Yahoo Finance IP 阻擋）
 const SECTOR_REPRESENTATIVES: Record<string, string[]> = {
-  'GPU / 加速運算':      ['NVDA', 'AMD'],
-  'CPU / 系統算力':      ['AMD', 'INTC'],
-  '光通訊 / Data Center': ['COHR', 'ANET'],
-  '記憶體 / 存儲':       ['MU', 'WDC'],
-  '電力與散熱':          ['VRT', 'SMCI'],
-  '客製化 AI 晶片':      ['MRVL', 'KLAC'],
-  '邊緣 AI / 工業':      ['NXPI', 'ADI'],
-  '雲端 / AI 軟體':      ['MSFT', 'AMZN'],
-  'AI 機器人':           ['ISRG', 'ABB'],
-  '衛星通訊':            ['ASTS', 'RKLB'],
-  '核能 / 潔淨電力':     ['CEG', 'VST'],
+  'GPU / 加速運算':        ['NVDA', 'AMD'],
+  '光通訊 / Data Center':  ['COHR', 'ANET'],
+  '記憶體 / 存儲':         ['MU', 'WDC'],
+  '電力與散熱':            ['VRT', 'SMCI'],
+  '客製化 AI 晶片':        ['MRVL', 'KLAC'],
+  '邊緣 AI / 工業':        ['NXPI', 'ADI'],
+  '雲端 / AI 軟體':        ['MSFT', 'AMZN'],
+  'AI 機器人':             ['ISRG', 'ABB'],
+  '衛星通訊':              ['ASTS', 'RKLB'],
+  '核能 / 潔淨電力':       ['CEG', 'VST'],
+  'CPU / 系統算力':        ['AMD', 'INTC'],
 };
 
 interface SectorData {
   sector: string;
-  avgChange1D: number;           // 類群今日平均漲跌幅（%）
-  avgChange5D: number | null;    // 5日均值（用週漲跌幅代理）
-  aboveMa50Count: number;        // 代表股中在 50MA 以上的數量
-  totalCount: number;            // 代表股總數
+  avgChange1D: number;
+  avgChange5D: number | null;
+  aboveMa50Count: number;
+  totalCount: number;
   supplyDemandSignal: 'supply_surge' | 'accumulating' | 'balanced' | 'distributing' | 'demand_collapse';
-  signalLabel: string;           // 中文訊號標籤
-  signalDesc: string;            // 供需說明
+  signalLabel: string;
+  signalDesc: string;
   stocks: Array<{
     symbol: string;
     change1D: number;
     aboveMa50: boolean;
-    distanceFromHigh: number;    // 距52週高點（%）
+    distanceFromHigh: number;
   }>;
-  isStatic?: boolean;            // true = 靜態 fallback，非即時數據
+  isStatic?: boolean;
 }
 
-// 靜態 fallback：基於近期市場觀察的保守估算
-const STATIC_FALLBACK: SectorData[] = [
-  {
-    sector: 'GPU / 加速運算', avgChange1D: 0, avgChange5D: null,
-    aboveMa50Count: 2, totalCount: 2,
-    supplyDemandSignal: 'balanced', signalLabel: '⚖️ 供需均衡',
-    signalDesc: '數據暫時無法取得，顯示預設狀態。請稍後重新整理以取得即時數據。',
-    stocks: [
-      { symbol: 'NVDA', change1D: 0, aboveMa50: true, distanceFromHigh: -5 },
-      { symbol: 'AMD', change1D: 0, aboveMa50: true, distanceFromHigh: -15 },
-    ],
+// ── 靜態 fallback ──────────────────────────────────────────────────────────
+function makeStaticSector(sector: string, symbols: string[]): SectorData {
+  return {
+    sector,
+    avgChange1D: 0, avgChange5D: null,
+    aboveMa50Count: Math.ceil(symbols.length / 2),
+    totalCount: symbols.length,
+    supplyDemandSignal: 'balanced',
+    signalLabel: '⚖️ 供需均衡',
+    signalDesc: '即時數據暫時無法取得，顯示預設狀態。請稍後重新整理。',
+    stocks: symbols.map(sym => ({
+      symbol: sym, change1D: 0, aboveMa50: true, distanceFromHigh: -10,
+    })),
     isStatic: true,
-  },
-  {
-    sector: 'CPU / 系統算力', avgChange1D: 0, avgChange5D: null,
-    aboveMa50Count: 1, totalCount: 2,
-    supplyDemandSignal: 'balanced', signalLabel: '⚖️ 供需均衡',
-    signalDesc: '數據暫時無法取得，顯示預設狀態。請稍後重新整理以取得即時數據。',
-    stocks: [
-      { symbol: 'AMD', change1D: 0, aboveMa50: true, distanceFromHigh: -15 },
-      { symbol: 'INTC', change1D: 0, aboveMa50: false, distanceFromHigh: -40 },
-    ],
-    isStatic: true,
-  },
-  {
-    sector: '光通訊 / Data Center', avgChange1D: 0, avgChange5D: null,
-    aboveMa50Count: 1, totalCount: 2,
-    supplyDemandSignal: 'balanced', signalLabel: '⚖️ 供需均衡',
-    signalDesc: '數據暫時無法取得，顯示預設狀態。',
-    stocks: [
-      { symbol: 'COHR', change1D: 0, aboveMa50: true, distanceFromHigh: -10 },
-      { symbol: 'ANET', change1D: 0, aboveMa50: true, distanceFromHigh: -8 },
-    ],
-    isStatic: true,
-  },
-  {
-    sector: '記憶體 / 存儲', avgChange1D: 0, avgChange5D: null,
-    aboveMa50Count: 1, totalCount: 2,
-    supplyDemandSignal: 'balanced', signalLabel: '⚖️ 供需均衡',
-    signalDesc: '數據暫時無法取得，顯示預設狀態。',
-    stocks: [
-      { symbol: 'MU', change1D: 0, aboveMa50: true, distanceFromHigh: -12 },
-      { symbol: 'WDC', change1D: 0, aboveMa50: false, distanceFromHigh: -20 },
-    ],
-    isStatic: true,
-  },
-  {
-    sector: '電力與散熱', avgChange1D: 0, avgChange5D: null,
-    aboveMa50Count: 1, totalCount: 2,
-    supplyDemandSignal: 'balanced', signalLabel: '⚖️ 供需均衡',
-    signalDesc: '數據暫時無法取得，顯示預設狀態。',
-    stocks: [
-      { symbol: 'VRT', change1D: 0, aboveMa50: true, distanceFromHigh: -7 },
-      { symbol: 'SMCI', change1D: 0, aboveMa50: false, distanceFromHigh: -60 },
-    ],
-    isStatic: true,
-  },
-  {
-    sector: '客製化 AI 晶片', avgChange1D: 0, avgChange5D: null,
-    aboveMa50Count: 1, totalCount: 2,
-    supplyDemandSignal: 'balanced', signalLabel: '⚖️ 供需均衡',
-    signalDesc: '數據暫時無法取得，顯示預設狀態。',
-    stocks: [
-      { symbol: 'MRVL', change1D: 0, aboveMa50: true, distanceFromHigh: -10 },
-      { symbol: 'KLAC', change1D: 0, aboveMa50: true, distanceFromHigh: -5 },
-    ],
-    isStatic: true,
-  },
-  {
-    sector: '邊緣 AI / 工業', avgChange1D: 0, avgChange5D: null,
-    aboveMa50Count: 1, totalCount: 2,
-    supplyDemandSignal: 'balanced', signalLabel: '⚖️ 供需均衡',
-    signalDesc: '數據暫時無法取得，顯示預設狀態。',
-    stocks: [
-      { symbol: 'NXPI', change1D: 0, aboveMa50: true, distanceFromHigh: -18 },
-      { symbol: 'ADI', change1D: 0, aboveMa50: true, distanceFromHigh: -12 },
-    ],
-    isStatic: true,
-  },
-  {
-    sector: '雲端 / AI 軟體', avgChange1D: 0, avgChange5D: null,
-    aboveMa50Count: 2, totalCount: 2,
-    supplyDemandSignal: 'balanced', signalLabel: '⚖️ 供需均衡',
-    signalDesc: '數據暫時無法取得，顯示預設狀態。',
-    stocks: [
-      { symbol: 'MSFT', change1D: 0, aboveMa50: true, distanceFromHigh: -5 },
-      { symbol: 'AMZN', change1D: 0, aboveMa50: true, distanceFromHigh: -8 },
-    ],
-    isStatic: true,
-  },
-  {
-    sector: 'AI 機器人', avgChange1D: 0, avgChange5D: null,
-    aboveMa50Count: 1, totalCount: 2,
-    supplyDemandSignal: 'balanced', signalLabel: '⚖️ 供需均衡',
-    signalDesc: '數據暫時無法取得，顯示預設狀態。',
-    stocks: [
-      { symbol: 'ISRG', change1D: 0, aboveMa50: true, distanceFromHigh: -6 },
-      { symbol: 'ABB', change1D: 0, aboveMa50: true, distanceFromHigh: -10 },
-    ],
-    isStatic: true,
-  },
-  {
-    sector: '衛星通訊', avgChange1D: 0, avgChange5D: null,
-    aboveMa50Count: 1, totalCount: 2,
-    supplyDemandSignal: 'balanced', signalLabel: '⚖️ 供需均衡',
-    signalDesc: '數據暫時無法取得，顯示預設狀態。',
-    stocks: [
-      { symbol: 'ASTS', change1D: 0, aboveMa50: true, distanceFromHigh: -35 },
-      { symbol: 'RKLB', change1D: 0, aboveMa50: true, distanceFromHigh: -12 },
-    ],
-    isStatic: true,
-  },
-  {
-    sector: '核能 / 潔淨電力', avgChange1D: 0, avgChange5D: null,
-    aboveMa50Count: 1, totalCount: 2,
-    supplyDemandSignal: 'balanced', signalLabel: '⚖️ 供需均衡',
-    signalDesc: '數據暫時無法取得，顯示預設狀態。',
-    stocks: [
-      { symbol: 'CEG', change1D: 0, aboveMa50: true, distanceFromHigh: -10 },
-      { symbol: 'VST', change1D: 0, aboveMa50: true, distanceFromHigh: -15 },
-    ],
-    isStatic: true,
-  },
-];
+  };
+}
 
-async function fetchStockData(symbol: string): Promise<{
+const STATIC_FALLBACK: SectorData[] = Object.entries(SECTOR_REPRESENTATIVES)
+  .map(([sector, symbols]) => makeStaticSector(sector, symbols));
+
+// ── 帶 timeout 的單股 fetch（只用最簡單的 quote API）───────────────────────
+async function fetchQuoteWithTimeout(symbol: string, timeoutMs = 6000): Promise<{
   symbol: string;
-  price: number;
   changePercent: number;
+  price: number;
   ma50: number | null;
   high52w: number | null;
 } | null> {
-  try {
-    // 方法 A：quoteSummary（更穩定）
-    const qs: any = await yahooFinance.quoteSummary(symbol, {
-      modules: ['price']
-    }, {
-      fetchOptions: { signal: AbortSignal.timeout(7000) }  // 7 秒超時
-    });
-    const p = qs?.price;
-    if (!p?.regularMarketPrice) return null;
-    return {
-      symbol,
-      price: p.regularMarketPrice,
-      changePercent: p.regularMarketChangePercent ?? 0,
-      ma50: p.fiftyDayAverage ?? null,
-      high52w: p.fiftyTwoWeekHigh ?? null,
-    };
-  } catch {
+  // 自訂 timeout：不依賴 AbortSignal.timeout（相容性最好）
+  let timerId: ReturnType<typeof setTimeout> | null = null;
+  const timeoutPromise = new Promise<null>(resolve => {
+    timerId = setTimeout(() => resolve(null), timeoutMs);
+  });
+
+  const fetchPromise = (async () => {
     try {
-      // 方法 B：quote() 作為 fallback
-      const q: any = await yahooFinance.quote(symbol, {}, {
-        fetchOptions: { signal: AbortSignal.timeout(7000) }  // 7 秒超時
-      });
+      // 只用 quote()，是最穩定的 Yahoo Finance API
+      const q: any = await yahooFinance.quote(symbol);
       if (!q?.regularMarketPrice) return null;
+      if (timerId) clearTimeout(timerId);
       return {
         symbol,
-        price: q.regularMarketPrice,
         changePercent: q.regularMarketChangePercent ?? 0,
+        price: q.regularMarketPrice,
         ma50: q.fiftyDayAverage ?? null,
         high52w: q.fiftyTwoWeekHigh ?? null,
       };
     } catch {
+      if (timerId) clearTimeout(timerId);
       return null;
     }
-  }
+  })();
+
+  const result = await Promise.race([fetchPromise, timeoutPromise]);
+  if (timerId) clearTimeout(timerId);
+  return result;
 }
 
-function determineSupplyDemand(avgChange1D: number, aboveMa50Pct: number, avgDistFromHigh: number): {
+// ── 供需訊號判斷 ────────────────────────────────────────────────────────────
+function determineSupplyDemand(avgChange1D: number, aboveMa50Pct: number): {
   signal: SectorData['supplyDemandSignal'];
   label: string;
   desc: string;
 } {
-  // 供不應求（正在漲價）：今日大漲 + 多數在均線之上 + 距高點近
   if (avgChange1D > 2.0 && aboveMa50Pct >= 0.6) {
-    return { 
-      signal: 'supply_surge',
-      label: '🔥 供不應求',
-      desc: '買盤強勁，需求超越供給，機構正在積極加倉。價格可能持續走高。'
+    return {
+      signal: 'supply_surge', label: '🔥 供不應求',
+      desc: '買盤強勁，需求超越供給，機構正在積極加倉。',
     };
   }
-  // 積極建倉（預期漲價）：今日上漲 + 技術面健康
   if (avgChange1D > 0.5 && aboveMa50Pct >= 0.5) {
     return {
-      signal: 'accumulating',
-      label: '📈 積極建倉',
-      desc: '資金流入明顯，市場預期未來供給缺口。長線資金正在佈局。'
+      signal: 'accumulating', label: '📈 積極建倉',
+      desc: '資金流入明顯，市場預期未來供給缺口，長線資金正在佈局。',
     };
   }
-  // 供過於求（在銷庫存）：今日下跌 + 多數跌破均線
   if (avgChange1D < -2.0 && aboveMa50Pct < 0.4) {
     return {
-      signal: 'demand_collapse',
-      label: '❄️ 供過於求',
-      desc: '需求萎縮，供給過剩，廠商正積極削減庫存。估值修正風險高。'
+      signal: 'demand_collapse', label: '❄️ 供過於求',
+      desc: '需求萎縮，供給過剩，廠商積極削減庫存，估值修正風險高。',
     };
   }
-  // 出貨分散（庫存消化中）：今日下跌 + 技術面轉弱
   if (avgChange1D < -0.5 && aboveMa50Pct < 0.5) {
     return {
-      signal: 'distributing',
-      label: '📉 出貨消化',
-      desc: '機構在相對高位分散持股，庫存去化中。需觀察是否出現承接買盤。'
+      signal: 'distributing', label: '📉 出貨消化',
+      desc: '機構在相對高位分散持股，庫存去化中，需觀察承接買盤。',
     };
   }
-  // 均衡：
   return {
-    signal: 'balanced',
-    label: '⚖️ 供需均衡',
-    desc: '多空力道相當，市場處於觀望整固階段。等待明確的催化劑驅動。'
+    signal: 'balanced', label: '⚖️ 供需均衡',
+    desc: '多空力道相當，市場處於觀望整固階段，等待明確催化劑。',
   };
 }
 
+// ── Module-level cache（在同一 warm instance 內有效）────────────────────────
 let cache: { data: SectorData[]; ts: number } | null = null;
-const CACHE_TTL = 300_000; // 5分鐘（比其他 API 短，因為需要即時性）
+const CACHE_TTL = 5 * 60 * 1000; // 5 分鐘
 
+// ── Handler ─────────────────────────────────────────────────────────────────
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method === 'OPTIONS') return res.status(200).end();
-  
-  // 有 cache 且沒過期，直接回傳
-  if (cache && Date.now() - cache.ts < CACHE_TTL) {
-    return res.json(cache.data);
-  }
 
-  // 關鍵：不阻礙前端。立刻先回傳備用資料（過期 cache 或靜態 fallback），隨後在背景非同步更新數據。
-  const responseData = cache ? cache.data : STATIC_FALLBACK;
-  res.json(responseData);
-
-  // 背景更新 cache
+  // 最外層 try/catch：確保永遠回傳有效 JSON，絕不回傳 500
   try {
-    const allSymbols = [...new Set(Object.values(SECTOR_REPRESENTATIVES).flat())];
-    const batchSize = 4;
-    const allResults: any[] = [];
-    
-    // 分批並行，避免高並發導致 Yahoo 阻擋或請求堆積
-    for (let i = 0; i < allSymbols.length; i += batchSize) {
-      const batch = allSymbols.slice(i, i + batchSize);
-      const batchResults = await Promise.all(batch.map(s => fetchStockData(s)));
-      allResults.push(...batchResults);
+    // Cache 命中（同一 warm instance 內）
+    if (cache && Date.now() - cache.ts < CACHE_TTL) {
+      return res.json(cache.data);
     }
-    
+
+    // ── 同步等待所有資料（修正核心：不再「先回傳再背景更新」）──
+    const allSymbols = [...new Set(Object.values(SECTOR_REPRESENTATIVES).flat())];
+
+    // 分批並行（每批 3 個），控制對 Yahoo Finance 的並發量
+    const BATCH_SIZE = 3;
     const stockMap: Record<string, any> = {};
-    allSymbols.forEach((s, i) => { if (allResults[i]) stockMap[s] = allResults[i]; });
-    
-    const sectorData = Object.entries(SECTOR_REPRESENTATIVES).map(([sector, symbols]) => {
+
+    for (let i = 0; i < allSymbols.length; i += BATCH_SIZE) {
+      const batch = allSymbols.slice(i, i + BATCH_SIZE);
+      const results = await Promise.allSettled(
+        batch.map(sym => fetchQuoteWithTimeout(sym, 5000))
+      );
+      results.forEach((r, idx) => {
+        if (r.status === 'fulfilled' && r.value) {
+          stockMap[batch[idx]] = r.value;
+        }
+      });
+      // 批次間短暫等待，減輕 Yahoo Finance 節流壓力
+      if (i + BATCH_SIZE < allSymbols.length) {
+        await new Promise(resolve => setTimeout(resolve, 200));
+      }
+    }
+
+    const successCount = Object.keys(stockMap).length;
+    console.log(`[sector-performance] Fetched ${successCount}/${allSymbols.length} symbols`);
+
+    // 如果完全取不到資料，使用靜態 fallback
+    if (successCount === 0) {
+      console.warn('[sector-performance] All Yahoo Finance fetches failed, returning static fallback');
+      return res.json(STATIC_FALLBACK);
+    }
+
+    // 組合各類群資料
+    const sectorData: SectorData[] = Object.entries(SECTOR_REPRESENTATIVES).map(([sector, symbols]) => {
       const validData = symbols.map(s => stockMap[s]).filter(Boolean);
-      
-      const stockDetails = validData.map(d => {
+
+      if (validData.length === 0) {
+        // 該類群無資料，用靜態備援
+        return makeStaticSector(sector, symbols);
+      }
+
+      const stockDetails = validData.map((d: any) => {
         const aboveMa50 = d.ma50 != null && d.ma50 > 0 && d.price > d.ma50;
         const distFromHigh = d.high52w != null && d.high52w > 0
           ? ((d.price - d.high52w) / d.high52w) * 100
@@ -293,18 +196,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           distanceFromHigh: parseFloat(distFromHigh.toFixed(1)),
         };
       });
-      
-      const avgChange1D = stockDetails.length > 0
-        ? stockDetails.reduce((sum, item) => sum + item.change1D, 0) / stockDetails.length
-        : 0;
+
+      const avgChange1D = stockDetails.reduce((s, i) => s + i.change1D, 0) / stockDetails.length;
       const aboveMa50Count = stockDetails.filter(d => d.aboveMa50).length;
-      const aboveMa50Pct = stockDetails.length > 0 ? aboveMa50Count / stockDetails.length : 0.5;
-      const avgDistFromHigh = stockDetails.length > 0
-        ? stockDetails.reduce((sum, item) => sum + item.distanceFromHigh, 0) / stockDetails.length
-        : 0;
-      
-      const { signal, label, desc } = determineSupplyDemand(avgChange1D, aboveMa50Pct, avgDistFromHigh);
-      
+      const aboveMa50Pct = aboveMa50Count / stockDetails.length;
+
+      const { signal, label, desc } = determineSupplyDemand(avgChange1D, aboveMa50Pct);
+
       return {
         sector,
         avgChange1D: parseFloat(avgChange1D.toFixed(2)),
@@ -315,18 +213,22 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         signalLabel: label,
         signalDesc: desc,
         stocks: stockDetails,
+        // isStatic 故意不加：有拿到數據就是 live
       };
     });
-    
-    const validSectors = sectorData.filter((s: SectorData) => s.totalCount > 0);
-    if (validSectors.length > 0) {
-      const sorted = validSectors.sort((a: SectorData, b: SectorData) => b.avgChange1D - a.avgChange1D);
-      cache = { data: sorted, ts: Date.now() };
-      console.log('[sector-performance] Background cache updated with', sorted.length, 'sectors');
-    } else {
-      console.warn('[sector-performance] Background update failed: No valid sectors fetched.');
-    }
+
+    // 按今日漲跌排序
+    const sorted = sectorData.sort((a, b) => b.avgChange1D - a.avgChange1D);
+
+    // 更新 cache
+    cache = { data: sorted, ts: Date.now() };
+    console.log(`[sector-performance] Cache updated: ${sorted.length} sectors`);
+
+    return res.json(sorted);
+
   } catch (err: any) {
-    console.warn('[sector-performance] Background update failed:', err?.message);
+    // 最終安全網：任何未預期錯誤，回傳靜態備援（絕不回傳 500）
+    console.error('[sector-performance] Unexpected handler error:', err?.message ?? err);
+    return res.json(STATIC_FALLBACK);
   }
 }
