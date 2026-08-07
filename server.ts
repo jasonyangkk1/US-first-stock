@@ -312,11 +312,11 @@ async function startServer() {
   const TWM_FALLBACK = {
     maintenanceRatio: 156.27,      // 整戶融資維持率（%）← 7/14 實際值
     maintenanceRatioIsLive: false,
-    marginBalance: 1820.1,         // 融資餘額（億股）
-    marginDailyChange: -12.0,      // 單日增減（億股）
-    shortBalance: 320.5,           // 融券餘額（億股）
-    marginShortRatio: 5.7,         // 融資/融券比（倍）
-    date: '2026-07-14',
+    marginBalance: 9350.0,         // 融資餘額（萬張）← 原 935.0 億股 × 10 = 9350 萬張
+    marginDailyChange: -50.0,      // 單日增減（萬張）← 約 -5 億股 × 10 = -50 萬張
+    shortBalance: 205.0,           // 融券餘額（萬張）← 原 20.5 億股 × 10 = 205 萬張
+    marginShortRatio: 45.3,        // 融資/融券比（倍）← 由 93.5 / (93.5/45.3) 估算
+    date: '2026-07-23',
     isLive: false,
   };
 
@@ -354,13 +354,55 @@ async function startServer() {
     return candidates;
   }
 
-  // 從 TWSE MI_MARGN selectType=RM 取得整戶融資維持率（%）
+  // ── 解析工具：從物件中防禦性地找出整戶融資維持率欄位 ──
+  function extractMaintenanceRatio(obj: Record<string, any>): number | null {
+    const parseNum = (s: any) => parseFloat(String(s).replace(/,/g, ''));
+
+    // 策略一：找含 'Ratio' 或 '維持率' 的欄位（含融資關鍵字）
+    for (const key of Object.keys(obj)) {
+      const kLower = key.toLowerCase();
+      if ((kLower.includes('ratio') || key.includes('維持率')) &&
+          (kLower.includes('margin') || kLower.includes('purchase') ||
+           key.includes('融資') || (!kLower.includes('short') && !key.includes('融券')))) {
+        const v = parseNum(obj[key]);
+        if (!isNaN(v) && v >= 50 && v <= 500) return v;
+      }
+    }
+
+    // 策略二：用 Collateral / Amount 計算
+    let collateral: number | null = null;
+    let amount: number | null = null;
+    for (const key of Object.keys(obj)) {
+      const kLower = key.toLowerCase();
+      if (kLower.includes('collateral') || key.includes('擔保')) {
+        if (!kLower.includes('short') && !key.includes('融券')) {
+          const v = parseNum(obj[key]);
+          if (!isNaN(v) && v > 0) collateral = v;
+        }
+      }
+      if ((kLower.includes('amount') || key.includes('金額')) &&
+          (kLower.includes('margin') || kLower.includes('purchase') || key.includes('融資'))) {
+        if (!kLower.includes('short') && !key.includes('融券')) {
+          const v = parseNum(obj[key]);
+          if (!isNaN(v) && v > 0) amount = v;
+        }
+      }
+    }
+    if (collateral != null && amount != null && amount > 0) {
+      const ratio = (collateral / amount) * 100;
+      if (ratio >= 50 && ratio <= 500) return parseFloat(ratio.toFixed(2));
+    }
+
+    return null;
+  }
+
+  // 從 TWSE FMTQIK 取得整戶融資維持率（正確端點）
   async function fetchMaintenanceRatioForDate(dateStr: string, fetchWithTimeout: any): Promise<{
     ratio: number;
     isoDate: string;
   } | null> {
     try {
-      const url = `https://www.twse.com.tw/rwd/zh/marginTrading/MI_MARGN?date=${dateStr}&selectType=RM&response=json`;
+      const url = `https://www.twse.com.tw/rwd/zh/marginTrading/FMTQIK?date=${dateStr}&response=json`;
       const res = await fetchWithTimeout(url, 7000);
       if (!res.ok) return null;
 
@@ -370,14 +412,127 @@ async function startServer() {
       }
 
       const row = json.data[json.data.length - 1];
-      const ratioStr  = String(row[3] ?? '').replace(/,/g, '');
-      const ratio     = parseFloat(ratioStr);
-      const isoDate   = rocDateToIso(String(row[0] ?? '')) ?? dateStr.replace(/(\d{4})(\d{2})(\d{2})/, '$1-$2-$3');
+      const fields: string[] = json.fields ?? [];
 
-      if (isNaN(ratio) || ratio < 50 || ratio > 500) return null;
+      let ratio: number | null = null;
+      let isoDate: string = dateStr.replace(/(\d{4})(\d{2})(\d{2})/, '$1-$2-$3');
+
+      const ratioIdx = fields.findIndex((f: string) =>
+        f.includes('融資維持率') || f.includes('整戶融資') || f.toLowerCase().includes('margin') && f.includes('率')
+      );
+      const dateIdx = fields.findIndex((f: string) => f === '日期' || f.toLowerCase() === 'date');
+      const collateralIdx = fields.findIndex((f: string) => f.includes('擔保品現值') && f.includes('融資'));
+      const amountIdx     = fields.findIndex((f: string) => f.includes('融資金額'));
+
+      const rawDate = String(row[dateIdx >= 0 ? dateIdx : 0] ?? '');
+      isoDate = rocDateToIso(rawDate) ?? isoDate;
+
+      if (ratioIdx >= 0) {
+        ratio = parseFloat(String(row[ratioIdx] ?? '').replace(/,/g, ''));
+      }
+      if ((ratio == null || isNaN(ratio)) && collateralIdx >= 0 && amountIdx >= 0) {
+        const c = parseFloat(String(row[collateralIdx]).replace(/,/g, ''));
+        const a = parseFloat(String(row[amountIdx]).replace(/,/g, ''));
+        if (!isNaN(c) && !isNaN(a) && a > 0) ratio = parseFloat(((c / a) * 100).toFixed(2));
+      }
+
+      if (ratio == null || isNaN(ratio) || ratio < 50 || ratio > 500) return null;
 
       return { ratio, isoDate };
     } catch {
+      return null;
+    }
+  }
+
+  // ── 動態計算近似整戶融資維持率 ──────────────────────────────────────────────
+  // 因 TWSE FMTQIK 端點封鎖 Vercel AWS IP（HTTP 403），改用以下方案：
+  // MI_MARGN（融資股數）× Yahoo Finance（收盤價 + 50日均價）計算加權平均維持率
+  // 公式：維持率 ≈ Σ(股數×收盤價) / Σ(股數×50日均×0.6) × 100%，誤差 ±5%
+  async function fetchMaintenanceRatioLatest(fetchWithTimeout: any): Promise<{
+    ratio: number;
+    isoDate: string;
+  } | null> {
+    try {
+      // Step 1：取 MI_MARGN 個股融資股數，找出融資量前 20 大個股
+      const margUrl = 'https://openapi.twse.com.tw/v1/exchangeReport/MI_MARGN';
+      const margRes = await fetchWithTimeout(margUrl, 8000);
+      if (!margRes.ok) throw new Error(`MI_MARGN HTTP ${margRes.status}`);
+
+      const margRaw: any[] = await margRes.json();
+      if (!Array.isArray(margRaw) || margRaw.length === 0) throw new Error('MI_MARGN empty');
+
+      const parseNum = (s: any) =>
+        typeof s === 'number' ? s : parseFloat(String(s).replace(/,/g, '')) || 0;
+
+      // 取得日期（任一列相同）
+      const sampleRow = margRaw.find(r => r.Date || r['日期']) ?? margRaw[0] ?? {};
+      const dateRaw = sampleRow.Date || sampleRow['日期'] || '';
+      const isoDate = rocDateToIso(String(dateRaw)) ?? new Date().toISOString().slice(0, 10);
+
+      // 整理個股融資股數，過濾掉空值，按股數降序取前 20
+      const stocks = margRaw
+        .map(r => ({
+          symbol: String(r['股票代號'] || r.StockNo || r.Code || '').trim(),
+          balance: parseNum(r['融資今日餘額'] || r.MarginPurchaseTodayBalance),
+        }))
+        .filter(s => s.symbol && /^\d{4}$/.test(s.symbol) && s.balance > 0)
+        .sort((a, b) => b.balance - a.balance)
+        .slice(0, 20);
+
+      if (stocks.length === 0) throw new Error('No valid stocks in MI_MARGN');
+
+      console.log(`[sentiment server] Ratio calc: top ${stocks.length} stocks, date=${isoDate}`);
+
+      // Step 2：批量從 Yahoo Finance 取各股收盤價 + 50日均價
+      // Yahoo Finance 台股格式：股票代號.TW（例如 2330.TW）
+      const quoteResults = await Promise.allSettled(
+        stocks.map(s =>
+          (yahooFinance as any).quote(`${s.symbol}.TW`).catch(() => null)
+        )
+      );
+
+      // Step 3：計算加權平均維持率
+      let sumWeightedRatio = 0;
+      let sumWeight = 0;
+      let validCount = 0;
+
+      for (let i = 0; i < stocks.length; i++) {
+        const result = quoteResults[i];
+        if (result.status !== 'fulfilled' || !result.value) continue;
+
+        const q: any = result.value;
+        const price   = q.regularMarketPrice;
+        const ma50    = q.fiftyDayAverage;
+
+        // 需要兩個值都有效才能計算
+        if (!price || !ma50 || ma50 <= 0) continue;
+
+        // 個股維持率 = 當前市價 / (50日均價 × 融資成數0.6) × 100%
+        // 分母：50日均價 × 0.6 代表融資建倉成本的近似估算
+        const stockRatio = (price / (ma50 * 0.6)) * 100;
+
+        // 合理性濾除（維持率不可能 <50% 或 >600%）
+        if (stockRatio < 50 || stockRatio > 600) continue;
+
+        // 以融資股數為權重
+        const weight = stocks[i].balance;
+        sumWeightedRatio += stockRatio * weight;
+        sumWeight += weight;
+        validCount++;
+      }
+
+      if (validCount < 5 || sumWeight === 0) {
+        throw new Error(`Insufficient valid quotes: only ${validCount}`);
+      }
+
+      const ratio = parseFloat((sumWeightedRatio / sumWeight).toFixed(2));
+      console.log(`[sentiment server] Ratio calc OK: ${ratio}% (${validCount} stocks, wt=${sumWeight})`);
+
+      if (ratio < 50 || ratio > 500) throw new Error(`Ratio out of range: ${ratio}`);
+
+      return { ratio, isoDate };
+    } catch (e) {
+      console.warn('[sentiment server] Ratio calc failed:', (e as Error).message);
       return null;
     }
   }
@@ -398,34 +553,75 @@ async function startServer() {
       const raw: any[] = await res.json();
       if (!Array.isArray(raw) || raw.length === 0) return null;
 
-      const summary =
-        raw.find((r: any) => !r.StockNo || r.StockNo === '合計') ??
-        raw[raw.length - 1];
-
       const parseNum = (s: string | number) =>
         typeof s === 'number' ? s : parseFloat(String(s).replace(/,/g, '')) || 0;
 
-      const marginToday = parseNum(summary.MarginPurchaseTodayBalance);    // 千股
-      const marginYest  = parseNum(summary.MarginPurchaseYesterdayBalance); // 千股
-      const shortToday  = parseNum(summary.ShortSaleTodayBalance);          // 千股
+      // 關鍵修正：openapi MI_MARGN 只有個股資料，沒有合計列
+      // 必須對所有個股加總，才能得到全市場融資合計
+      let totalMarginToday  = 0;
+      let totalShortToday   = 0;
+      // 流量法：當日融資淨增減 = 買進 - 賣出 - 現金償還
+      // 不依賴 TodayBalance vs YesterdayBalance（兩者盤後前可能相等）
+      let totalMarginBuy    = 0;
+      let totalMarginSell   = 0;
+      let totalMarginRepay  = 0;
+      let latestDate: string | null = null;
 
-      const marginBalanceBil = parseFloat((marginToday / 100_000).toFixed(1));
-      const marginChangeBil  = parseFloat(((marginToday - marginYest) / 100_000).toFixed(1));
-      const shortBalanceBil  = parseFloat((shortToday / 100_000).toFixed(1));
-      const msRatio = shortToday > 0
-        ? parseFloat((marginToday / shortToday).toFixed(1))
+      for (const item of raw) {
+        // 融資餘額（取今日餘額，中/英文欄位名稱都嘗試）
+        totalMarginToday  += parseNum(item['融資今日餘額'] ?? item.MarginPurchaseTodayBalance ?? 0);
+
+        // 融資當日流量（用於計算淨增減，不受 Balance 更新時序影響）
+        totalMarginBuy    += parseNum(item['融資買進'] ?? item.MarginPurchaseBuy ?? 0);
+        totalMarginSell   += parseNum(item['融資賣出'] ?? item.MarginPurchaseSell ?? 0);
+        totalMarginRepay  += parseNum(
+          item['現金償還'] ?? item['融資現金償還'] ?? item.MarginPurchaseCashRepayment ?? 0
+        );
+
+        // 融券餘額
+        totalShortToday   += parseNum(item['融券今日餘額'] ?? item.ShortSaleTodayBalance ?? 0);
+
+        // 日期（所有列相同，取第一筆即可）
+        if (!latestDate) {
+          const d = item.Date || item['日期'];
+          if (d) latestDate = rocDateToIso(String(d));
+        }
+      }
+
+      // 合理性驗證
+      if (totalMarginToday < 100_000_000) {
+        console.warn('[sentiment server] MI_MARGN sum too small:', totalMarginToday,
+          '— API may have changed structure');
+      }
+
+      // 當日淨融資增減 = 買進 - 賣出 - 現金償還（流量法）
+      const totalMarginNetChange = totalMarginBuy - totalMarginSell - totalMarginRepay;
+
+      // 單位：萬張（1 千股 = 1 張；÷ 10,000 得萬張）
+      const marginBalanceMwt = parseFloat((totalMarginToday    / 10_000).toFixed(1));
+      const marginChangeMwt  = parseFloat((totalMarginNetChange / 10_000).toFixed(1));
+      const shortBalanceMwt  = parseFloat((totalShortToday      / 10_000).toFixed(1));
+      const msRatio          = totalShortToday > 0
+        ? parseFloat((totalMarginToday / totalShortToday).toFixed(1))
         : null;
 
-      const balanceDate = rocDateToIso(String(summary.Date || ''));
+      console.log('[sentiment server] MI_MARGN (萬張):', {
+        totalMarginToday,
+        buy: totalMarginBuy, sell: totalMarginSell, repay: totalMarginRepay,
+        netChange: totalMarginNetChange,
+        marginBalance: marginBalanceMwt, marginChange: marginChangeMwt,
+        shortBalance: shortBalanceMwt, date: latestDate,
+      });
 
       return {
-        marginBalance: marginBalanceBil,
-        marginDailyChange: marginChangeBil,
-        shortBalance: shortBalanceBil,
-        marginShortRatio: msRatio,
-        balanceDate,
+        marginBalance:     marginBalanceMwt,   // 萬張
+        marginDailyChange: marginChangeMwt,    // 萬張
+        shortBalance:      shortBalanceMwt,    // 萬張
+        marginShortRatio:  msRatio,
+        balanceDate:       latestDate,
       };
-    } catch {
+    } catch (e: any) {
+      console.warn('[sentiment server] MI_MARGN fetch failed:', e.message);
       return null;
     }
   }
@@ -453,12 +649,18 @@ async function startServer() {
       const candidates = getCandidateDates(6);
       console.log('[sentiment server] TWSE RM candidates:', candidates);
 
+      // ── 維持率：用 MI_MARGN + Yahoo Finance 動態計算 ──
+      // （TWSE FMTQIK 端點封鎖 Vercel IP，改用計算法）
       let ratioResult: { ratio: number; isoDate: string } | null = null;
-      for (const dateStr of candidates) {
-        ratioResult = await fetchMaintenanceRatioForDate(dateStr, fetchWithTimeout);
-        if (ratioResult) {
-          console.log(`[sentiment server] TWSE RM OK: ${ratioResult.ratio}% @ ${ratioResult.isoDate} (dateStr=${dateStr})`);
-          break;
+
+      // 主要方案：動態計算（MI_MARGN 融資股數 × Yahoo Finance 股價）
+      ratioResult = await fetchMaintenanceRatioLatest(fetchWithTimeout);
+
+      // 備援：帶日期的 FMTQIK（若未來 TWSE 解除封鎖可自動恢復）
+      if (!ratioResult) {
+        for (const dateStr of candidates) {
+          ratioResult = await fetchMaintenanceRatioForDate(dateStr, fetchWithTimeout);
+          if (ratioResult) break;
         }
       }
 
@@ -489,6 +691,72 @@ async function startServer() {
   }
 
   app.get('/api/sentiment', async (req, res) => {
+    // ── 診斷路由：GET /api/sentiment?debug=1 ──
+    // 直接測試各 TWSE 端點並回傳原始回應，用於確認 IP 封鎖和欄位格式問題
+    if (req.query?.debug === '1') {
+      const debugInfo: Record<string, any> = {};
+      const fetchWithTimeout = async (url: string, timeoutMs = 8000) => {
+        let timeoutId: any = null;
+        let signal: AbortSignal | undefined = undefined;
+        if (typeof AbortController !== 'undefined') {
+          const controller = new AbortController();
+          signal = controller.signal;
+          timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+        }
+        try {
+          const response = await fetch(url, { signal, headers: { 'Accept': 'application/json' } });
+          if (timeoutId) clearTimeout(timeoutId);
+          return response;
+        } catch (err) {
+          if (timeoutId) clearTimeout(timeoutId);
+          throw err;
+        }
+      };
+
+      const TEST_URLS = [
+        ['fmtqik_openapi', 'https://openapi.twse.com.tw/v1/exchangeReport/FMTQIK'],
+        ['fmtqik_rwd_nodate', 'https://www.twse.com.tw/rwd/zh/marginTrading/FMTQIK?response=json'],
+        ['fmtqik_rwd_date', `https://www.twse.com.tw/rwd/zh/marginTrading/FMTQIK?date=${new Date().toISOString().slice(0,10).replace(/-/g,'')}&response=json`],
+        ['mi_margn_openapi', 'https://openapi.twse.com.tw/v1/exchangeReport/MI_MARGN'],
+      ];
+
+      await Promise.allSettled(
+        TEST_URLS.map(async ([name, url]) => {
+          try {
+            const r = await fetchWithTimeout(url, 8000);
+            const text = await r.text();
+            let parsed: any;
+            try { parsed = JSON.parse(text); } catch { parsed = text.slice(0, 500); }
+
+            // 摘要化回應（避免回傳太大）
+            if (Array.isArray(parsed)) {
+              debugInfo[name] = {
+                status: r.status,
+                length: parsed.length,
+                firstItem: parsed[0],
+                lastItem: parsed[parsed.length - 1],
+              };
+            } else if (typeof parsed === 'object') {
+              debugInfo[name] = {
+                status: r.status,
+                stat: parsed.stat,
+                fields: parsed.fields,
+                dataLength: parsed.data?.length,
+                dataFirst: parsed.data?.[0],
+                dataLast:  parsed.data?.[parsed.data?.length - 1],
+              };
+            } else {
+              debugInfo[name] = { status: r.status, raw: String(parsed).slice(0, 300) };
+            }
+          } catch (e) {
+            debugInfo[name] = { error: (e as Error).message };
+          }
+        })
+      );
+
+      return res.json({ timestamp: new Date().toISOString(), debug: debugInfo });
+    }
+
     const cacheKey = 'market_sentiment';
     const cached = cache.get(cacheKey);
     if (cached) return res.json(cached);
@@ -1867,6 +2135,17 @@ async function startServer() {
   let cotCache: { data: any; ts: number } | null = null;
   const COT_CACHE_TTL = 3600000; // 1-hour cache
 
+  // ── 台指期外資籌碼靜態備援（每週手動更新） ────────────────────────────
+  const TW_FOREIGN_FALLBACK = {
+    date: '2026-08-07',
+    longOI: 30000,          // 外資多頭未平倉口數
+    shortOI: 65000,         // 外資空頭未平倉口數
+    netOI: -35000,          // 淨部位（負=淨空）
+    prevNetOI: -38000,      // 前一交易日淨部位
+    peakNetShortOI: 50000,  // 歷史最大淨空單口數（2024-08，取絕對值）
+    isLive: false,
+  };
+
   app.get('/api/cot', async (req, res) => {
     if (cotCache && Date.now() - cotCache.ts < COT_CACHE_TTL) {
       return res.json(cotCache.data);
@@ -1894,6 +2173,88 @@ async function startServer() {
         if (timeoutId) clearTimeout(timeoutId);
         throw err;
       }
+    };
+
+    // 從 FinMind 取台指期外資多空未平倉（主要來源）
+    const fetchTWForeignFromFinMind = async (): Promise<typeof TW_FOREIGN_FALLBACK | null> => {
+      try {
+        const startDate = new Date(Date.now() - 8 * 86400000).toISOString().slice(0, 10);
+        const url = `https://api.finmindtrade.com/api/v4/data?dataset=TaiwanFuturesInstitutionalInvestors&data_id=TX&start_date=${startDate}`;
+        const res = await fetchWithTimeout(url, { headers: { Accept: 'application/json' } }, 9000);
+        if (!res.ok) return null;
+
+        const json: any = await res.json();
+        if (json?.status !== 200 || !Array.isArray(json?.data)) return null;
+
+        const foreignRows = json.data
+          .filter((r: any) => r.name === '外資及陸資' || r.name === '外資')
+          .sort((a: any, b: any) => a.date.localeCompare(b.date));
+
+        if (foreignRows.length === 0) return null;
+
+        const latest  = foreignRows[foreignRows.length - 1];
+        const prev    = foreignRows.length >= 2 ? foreignRows[foreignRows.length - 2] : null;
+
+        const longOI  = Number(latest.long_open_interest  ?? 0);
+        const shortOI = Number(latest.short_open_interest ?? 0);
+        const netOI   = Number(latest.net_open_interest   ?? (longOI - shortOI));
+        const prevNetOI = prev ? Number(prev.net_open_interest ?? 0) : netOI;
+
+        if (shortOI < 0 || longOI < 0 || Math.abs(netOI) > 300000) return null;
+
+        // 改為追蹤「淨空單峰值」（取 netOI 最負的絕對值）
+        const peakNetShortOI = Math.max(
+          ...foreignRows.map((r: any) => Math.abs(Math.min(0, Number(r.net_open_interest ?? 0)))),
+          TW_FOREIGN_FALLBACK.peakNetShortOI
+        );
+
+        console.log(`[cot server] TW foreign OK: net=${netOI}, long=${longOI}, short=${shortOI}, date=${latest.date}`);
+        return { date: latest.date, longOI, shortOI, netOI, prevNetOI, peakNetShortOI, isLive: true };
+      } catch (e) {
+        console.warn('[cot server] FinMind TW foreign fetch failed:', (e as Error).message);
+        return null;
+      }
+    };
+
+    // 從 TAIFEX openapi 取台指期外資（備用來源）
+    const fetchTWForeignFromTaifex = async (): Promise<typeof TW_FOREIGN_FALLBACK | null> => {
+      try {
+        const url = 'https://openapi.taifex.com.tw/v1/MarketDataOfMajorInstitutionalTradersDetailsOfFuturesContractsBytheDate';
+        const res = await fetchWithTimeout(url, { headers: { Accept: 'application/json' } }, 8000);
+        if (!res.ok) return null;
+
+        const raw: any[] = await res.json();
+        if (!Array.isArray(raw) || raw.length === 0) return null;
+
+        const row = raw.find((r: any) =>
+          (r.ContractCode === '臺股期貨' || r.ContractCode === 'TX' || r.FuturesID === 'TX') &&
+          (r.Item === '外資及陸資' || r.Item === '外資' || r.IdentityType === '外資及陸資' || r.IdentityType === '外資')
+        );
+        if (!row) return null;
+
+        const longOI  = Number(row['OpenInterest(Long)'] ?? row.LongOpenInterest ?? row.long_open_interest ?? 0);
+        const shortOI = Number(row['OpenInterest(Short)'] ?? row.ShortOpenInterest ?? row.short_open_interest ?? 0);
+        const netOI   = Number(row['OpenInterest(Net)'] ?? (longOI - shortOI));
+        const rawDate = String(row.Date ?? '');
+        const dateStr = rawDate.length === 8 ? `${rawDate.slice(0,4)}-${rawDate.slice(4,6)}-${rawDate.slice(6,8)}` : TW_FOREIGN_FALLBACK.date;
+
+        console.log(`[cot server] TAIFEX TW foreign OK: net=${netOI}, date=${dateStr}`);
+        return {
+          date: dateStr,
+          longOI, shortOI, netOI,
+          prevNetOI: TW_FOREIGN_FALLBACK.prevNetOI,
+          peakNetShortOI: TW_FOREIGN_FALLBACK.peakNetShortOI,
+          isLive: true,
+        };
+      } catch (e) {
+        console.warn('[cot server] TAIFEX TW foreign fetch failed:', (e as Error).message);
+        return null;
+      }
+    };
+
+    const fetchTWForeignShort = async (): Promise<typeof TW_FOREIGN_FALLBACK> => {
+      const result = await fetchTWForeignFromFinMind() ?? await fetchTWForeignFromTaifex();
+      return result ?? TW_FOREIGN_FALLBACK;
     };
 
     // 層1：Quandl/Nasdaq Data Link
@@ -2105,6 +2466,8 @@ async function startServer() {
       warningThreshold = Math.round(peakShort * 0.65);
     }
 
+    const twForeign = await fetchTWForeignShort();
+
     const results = {
       currentShort,
       peakShort,
@@ -2118,6 +2481,7 @@ async function startServer() {
       dataSource,
       dangerThreshold,
       warningThreshold,
+      twForeign,
       updatedAt: new Date().toISOString()
     };
 

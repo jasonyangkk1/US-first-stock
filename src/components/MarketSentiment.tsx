@@ -641,13 +641,13 @@ export default function MarketSentiment() {
           vix: { value: 14.2, change: -1.2 },
           fearAndGreed: { value: 58, label: 'Greed', updated: new Date().toISOString() },
           taiwanMargin: {
-            maintenanceRatio: 153.2,
+            maintenanceRatio: 156.27,
             maintenanceRatioIsLive: false,
-            marginBalance: 1820.1,
-            marginDailyChange: -12.0,
-            shortBalance: 320.5,
-            marginShortRatio: 5.7,
-            date: '2026-07-14',
+            marginBalance: 9350.0,
+            marginDailyChange: -50.0,
+            shortBalance: 205.0,
+            marginShortRatio: 45.3,
+            date: '2026-07-23',
             isLive: false,
           },
         });
@@ -3440,6 +3440,313 @@ export default function MarketSentiment() {
           </div>
         </div>
 
+        {/* ═══ 台指期外資籌碼水位（重構版）═══ */}
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.35 }}
+          className="bg-card-bg border border-border-subtle rounded-2xl p-5 mb-6"
+        >
+          {(() => {
+            const tw             = cotData?.twForeign;
+            const netOI          = tw?.netOI          ?? -35000;
+            const longOI         = tw?.longOI         ?? 30000;
+            const shortOI        = tw?.shortOI        ?? 65000;
+            const prevNetOI      = tw?.prevNetOI      ?? -38000;
+            const peakNetShortOI = tw?.peakNetShortOI ?? 50000; // 歷史最大淨空（絕對值）
+            const isLive         = tw?.isLive         ?? false;
+            const dataDate       = tw?.date           ?? '2026-08-07';
+
+            // 日變化：正=往多頭方向，負=往空頭方向
+            const netChange = netOI - prevNetOI;
+            // 當前淨空強度（正值）
+            const netShortAbs = Math.max(0, -netOI);
+            // 相對歷史峰值佔比
+            const peakPct = peakNetShortOI > 0
+              ? Math.min(100, (netShortAbs / peakNetShortOI) * 100)
+              : 0;
+
+            // ── 三段式信號（以淨空口數為判斷基準）──
+            // 🟢 安全：淨空 < 15,000 口
+            // 🟡 警戒：15,000 ~ 30,000 口
+            // 🔴 危險：> 30,000 口（接近歷史峰值 4.5~5萬口）
+            const signal =
+              netOI >= 0         ? 'bull' :
+              netOI > -15000     ? 'safe' :
+              netOI > -30000     ? 'caution' : 'danger';
+
+            const signalMap = {
+              bull: {
+                emoji: '🟢', label: '外資淨多 · 偏多台股',
+                desc: '外資持有淨多頭部位，機構看多台股，有助支撐指數方向。',
+                alertBg: 'bg-emerald-500/10', alertBorder: 'border-emerald-500/30',
+                alertText: 'text-emerald-400', cardBorder: 'border-emerald-500/20',
+                barColor: 'bg-emerald-500',
+              },
+              safe: {
+                emoji: '🟢', label: '安全區 · 外資避險情緒低',
+                desc: '外資淨空單低於 1.5 萬口，期貨避險需求弱，有利多頭格局延續。',
+                alertBg: 'bg-emerald-500/8', alertBorder: 'border-emerald-500/20',
+                alertText: 'text-emerald-400', cardBorder: 'border-emerald-500/15',
+                barColor: 'bg-emerald-500',
+              },
+              caution: {
+                emoji: '🟡', label: '警戒區 · 外資開始壓盤避險',
+                desc: '外資淨空單介於 1.5~3 萬口，機構加強期貨避險，盤勢容易在高檔震盪。',
+                alertBg: 'bg-yellow-500/8', alertBorder: 'border-yellow-500/25',
+                alertText: 'text-yellow-400', cardBorder: 'border-yellow-500/20',
+                barColor: 'bg-yellow-500',
+              },
+              danger: {
+                emoji: '🔴', label: '極端危險區 · 外資期貨布滿空單',
+                desc: '外資淨空單超過 3 萬口，接近歷史峰值（4.5~5 萬口）。現貨稍有風吹草動，即可能發動大平倉或現貨暴砍，隨時有洗盤風險。',
+                alertBg: 'bg-rose-500/10', alertBorder: 'border-rose-500/30',
+                alertText: 'text-rose-400', cardBorder: 'border-rose-500/25',
+                barColor: 'bg-rose-500',
+              },
+            }[signal];
+
+            // 中軸進度條：範圍 -50000（極端淨空）~ +30000（極端淨多）
+            // 0 在整條的 50000/(50000+30000) ≈ 62.5% 位置
+            const AXIS_LEFT  = 50000; // 左端（極端淨空）
+            const AXIS_RIGHT = 30000; // 右端（極端淨多）
+            const AXIS_TOTAL = AXIS_LEFT + AXIS_RIGHT; // 80000
+            // 當前位置百分比（0%=最左端極端淨空，100%=最右端極端淨多）
+            const axisPct = Math.min(100, Math.max(0, (netOI + AXIS_LEFT) / AXIS_TOTAL * 100));
+            // 零點（中性）的百分比位置
+            const zeroAxisPct = AXIS_LEFT / AXIS_TOTAL * 100; // 62.5%
+            // 警戒線位置（-15000）
+            const cautionAxisPct = (-15000 + AXIS_LEFT) / AXIS_TOTAL * 100; // 43.75%
+            // 危險線位置（-30000）
+            const dangerAxisPct  = (-30000 + AXIS_LEFT) / AXIS_TOTAL * 100; // 25%
+
+            return (
+              <div>
+                {/* ── 標題列 ── */}
+                <div className="flex items-center justify-between mb-5">
+                  <div>
+                    <h2 className="text-sm font-bold text-text-bright tracking-wide uppercase flex items-center gap-2">
+                      <span className="text-base">🏦</span>
+                      台指期外資籌碼水位
+                    </h2>
+                    <p className="text-[10px] text-text-dim mt-0.5 font-mono">
+                      TAIFEX TX · FOREIGN INSTITUTIONAL NET OPEN INTEREST
+                    </p>
+                  </div>
+                  <div className="flex flex-col items-end gap-1">
+                    <span className={`text-[9px] font-bold border px-2 py-0.5 rounded uppercase tracking-widest ${
+                      isLive
+                        ? 'text-emerald-400 border-emerald-500/30 bg-emerald-500/10'
+                        : 'text-yellow-500/70 border-yellow-500/20 bg-yellow-500/5'
+                    }`}>
+                      {isLive ? 'TAIFEX Live' : '靜態備援'}
+                    </span>
+                    <span className="text-[9px] text-text-dim/50 font-mono">{dataDate}</span>
+                  </div>
+                </div>
+
+                {/* ── 三段式 Alert 橫幅 ── */}
+                <div className={`rounded-xl px-4 py-3 border mb-5 ${signalMap.alertBg} ${signalMap.alertBorder}`}>
+                  <div className={`text-sm font-bold ${signalMap.alertText} mb-1`}>
+                    {signalMap.emoji} {signalMap.label}
+                  </div>
+                  <p className="text-[11px] text-text-dim/80 leading-relaxed">
+                    {signalMap.desc}
+                  </p>
+                </div>
+
+                {/* ── 主指標：淨部位 ── */}
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-5">
+                  {/* 主卡：淨部位（全寬或佔大） */}
+                  <div className={`md:col-span-2 rounded-xl p-4 border ${signalMap.cardBorder} bg-white/3`}>
+                    <div className="text-[10px] text-text-dim uppercase tracking-widest mb-1 font-mono">
+                      外資台指期 淨未平倉口數
+                    </div>
+                    <div className="flex items-end gap-3">
+                      <div className={`text-4xl font-mono font-bold tracking-tight ${signalMap.alertText}`}>
+                        {netOI >= 0 ? '+' : ''}{(netOI / 10000).toFixed(1)}
+                        <span className="text-lg font-normal ml-1">萬口</span>
+                      </div>
+                      <div className={`text-xs font-mono pb-1 ${netChange > 0 ? 'text-emerald-400' : netChange < 0 ? 'text-rose-400' : 'text-text-dim/50'}`}>
+                        {netChange > 0 ? '▲' : netChange < 0 ? '▼' : '—'}{' '}
+                        {Math.abs(netChange).toLocaleString()} 口<br/>
+                        <span className="text-[9px] text-text-dim/40">日變化</span>
+                      </div>
+                    </div>
+                    {/* 歷史對比：淨空單 + 總空單雙行 */}
+                    <div className="mt-3 space-y-1.5">
+                      {/* 淨空單對比 */}
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="text-[10px] text-text-dim/60 font-mono">
+                          淨空單：當前{' '}
+                          <span className={`font-bold ${signalMap.alertText}`}>
+                            {(netShortAbs / 10000).toFixed(1)} 萬口
+                          </span>
+                          {' '}／ 歷史淨空峰值{' '}
+                          <span className="text-text-dim/80">{(peakNetShortOI / 10000).toFixed(1)} 萬口</span>
+                          （2024/08）
+                        </span>
+                        <span className={`text-[10px] font-bold font-mono px-1.5 py-0.5 rounded ${
+                          peakPct > 80 ? 'text-rose-400 bg-rose-500/15' :
+                          peakPct > 50 ? 'text-orange-400 bg-orange-500/15' :
+                          'text-yellow-400 bg-yellow-500/10'
+                        }`}>
+                          佔峰值 {peakPct.toFixed(0)}%
+                        </span>
+                      </div>
+                      {/* 總空單對比（次要，以斜體小字區分） */}
+                      {(() => {
+                        const PEAK_SHORT_OI = 80000; // 歷史最大總空單（2024/08）
+                        const totalShortPct = Math.min(100, (shortOI / PEAK_SHORT_OI) * 100);
+                        return (
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="text-[10px] text-text-dim/40 font-mono italic">
+                              總空單：當前{' '}
+                              <span className="text-text-dim/60 not-italic font-bold">
+                                {(shortOI / 10000).toFixed(1)} 萬口
+                              </span>
+                              {' '}／ 歷史總空峰值{' '}
+                              <span className="text-text-dim/50 not-italic">{(PEAK_SHORT_OI / 10000).toFixed(1)} 萬口</span>
+                              （含多頭對沖，佔峰值{' '}
+                              <span className={`not-italic font-bold ${totalShortPct > 80 ? 'text-rose-400/60' : 'text-text-dim/50'}`}>
+                                {totalShortPct.toFixed(0)}%
+                              </span>
+                              ）
+                            </span>
+                          </div>
+                        );
+                      })()}
+                    </div>
+                  </div>
+
+                  {/* 副卡：三段式門檻快查 */}
+                  <div className="rounded-xl p-4 border border-border-subtle/40 bg-white/2 flex flex-col justify-between">
+                    <div className="text-[9px] text-text-dim/50 uppercase tracking-widest font-mono mb-2">
+                      判讀門檻
+                    </div>
+                    <div className="space-y-2">
+                      <div className={`flex items-center justify-between text-[10px] font-mono ${netOI > -15000 ? 'opacity-100' : 'opacity-40'}`}>
+                        <span className="text-emerald-400">🟢 安全</span>
+                        <span className="text-text-dim">淨空 &lt; 1.5 萬口</span>
+                      </div>
+                      <div className={`flex items-center justify-between text-[10px] font-mono ${netOI <= -15000 && netOI > -30000 ? 'opacity-100' : 'opacity-40'}`}>
+                        <span className="text-yellow-400">🟡 警戒</span>
+                        <span className="text-text-dim">1.5 ~ 3 萬口</span>
+                      </div>
+                      <div className={`flex items-center justify-between text-[10px] font-mono ${netOI <= -30000 ? 'opacity-100' : 'opacity-40'}`}>
+                        <span className="text-rose-400">🔴 危險</span>
+                        <span className="text-text-dim">&gt; 3 萬口</span>
+                      </div>
+                    </div>
+                    <div className="mt-3 pt-2 border-t border-border-subtle/20 text-[9px] text-text-dim/40 font-mono">
+                      峰值 ≈ 4.5~5 萬口
+                    </div>
+                  </div>
+                </div>
+
+                {/* ── 淨部位中軸計量條（合併版）── */}
+                <div className="mb-5">
+                  <div className="flex justify-between text-[9px] text-text-dim/50 font-mono mb-2">
+                    <span className="text-rose-400/70">← 極端淨空（-5萬口）</span>
+                    <span className="text-text-dim/40">淨部位情緒計量</span>
+                    <span className="text-emerald-400/70">極端淨多（+3萬口）→</span>
+                  </div>
+
+                  {/* 計量條軌道 */}
+                  <div className="relative h-5">
+                    {/* 背景軌道（三色區段）*/}
+                    <div className="absolute inset-0 rounded-full overflow-hidden flex">
+                      {/* 危險區（左側，0~25%）*/}
+                      <div className="bg-rose-500/20" style={{ width: `${dangerAxisPct}%` }} />
+                      {/* 警戒區（25%~43.75%）*/}
+                      <div className="bg-yellow-500/15" style={{ width: `${cautionAxisPct - dangerAxisPct}%` }} />
+                      {/* 安全/多頭區（43.75%~100%）*/}
+                      <div className="bg-emerald-500/10 flex-1" />
+                    </div>
+
+                    {/* 危險線標記（-30000）*/}
+                    <div
+                      className="absolute top-0 bottom-0 w-px bg-rose-500/50"
+                      style={{ left: `${dangerAxisPct}%` }}
+                    />
+                    {/* 警戒線標記（-15000）*/}
+                    <div
+                      className="absolute top-0 bottom-0 w-px bg-yellow-500/50"
+                      style={{ left: `${cautionAxisPct}%` }}
+                    />
+                    {/* 零點線（中性）*/}
+                    <div
+                      className="absolute top-0 bottom-0 w-0.5 bg-text-dim/30"
+                      style={{ left: `${zeroAxisPct}%` }}
+                    />
+
+                    {/* 當前位置指針 */}
+                    <div
+                      className="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 transition-all duration-1000"
+                      style={{ left: `${axisPct}%` }}
+                    >
+                      <div className={`w-4 h-4 rounded-full border-2 border-card-bg shadow-lg ${signalMap.barColor}`} />
+                    </div>
+                  </div>
+
+                  {/* 軸線標籤 */}
+                  <div className="relative mt-1 h-4">
+                    <span className="absolute text-[8px] text-rose-400/60 font-mono" style={{ left: `${dangerAxisPct}%`, transform: 'translateX(-50%)' }}>
+                      -3萬
+                    </span>
+                    <span className="absolute text-[8px] text-yellow-400/60 font-mono" style={{ left: `${cautionAxisPct}%`, transform: 'translateX(-50%)' }}>
+                      -1.5萬
+                    </span>
+                    <span className="absolute text-[8px] text-text-dim/40 font-mono" style={{ left: `${zeroAxisPct}%`, transform: 'translateX(-50%)' }}>
+                      0
+                    </span>
+                    {/* 當前值標籤 */}
+                    <span
+                      className={`absolute text-[9px] font-bold font-mono ${signalMap.alertText} transition-all duration-1000`}
+                      style={{ left: `${axisPct}%`, transform: 'translateX(-50%)', top: '0px' }}
+                    >
+                      {(netOI / 10000).toFixed(1)}萬
+                    </span>
+                  </div>
+                </div>
+
+                {/* ── 次要明細（縮小版）── */}
+                <div className="grid grid-cols-3 gap-2 pt-4 border-t border-border-subtle/20">
+                  <div className="text-center">
+                    <div className="text-[9px] text-text-dim/50 font-mono uppercase mb-0.5">空頭未平倉</div>
+                    <div className="text-sm font-mono font-bold text-rose-400">
+                      {(shortOI / 10000).toFixed(1)}<span className="text-[9px] font-normal ml-0.5">萬口</span>
+                    </div>
+                  </div>
+                  <div className="text-center">
+                    <div className="text-[9px] text-text-dim/50 font-mono uppercase mb-0.5">多頭未平倉</div>
+                    <div className="text-sm font-mono font-bold text-emerald-400">
+                      {(longOI / 10000).toFixed(1)}<span className="text-[9px] font-normal ml-0.5">萬口</span>
+                    </div>
+                  </div>
+                  <div className="text-center">
+                    <div className="text-[9px] text-text-dim/50 font-mono uppercase mb-0.5">多空比</div>
+                    <div className="text-sm font-mono font-bold text-text-secondary">
+                      {longOI > 0 && shortOI > 0 ? (longOI / shortOI).toFixed(2) : '--'}
+                      <span className="text-[9px] font-normal ml-0.5">倍</span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* ── 底部說明 ── */}
+                <div className="mt-4 pt-3 border-t border-border-subtle/20 text-[9px] text-text-dim/40 leading-relaxed font-mono">
+                  來源：台灣期貨交易所（TAIFEX）三大法人台指期未平倉 · 每日盤後更新。
+                  <span className="text-text-dim/55">
+                    外資淨空單歷史峰值約 4.5~5 萬口（對應總空單歷史峰值約 8 萬口，均發生於 2024/08 黑天鵝事件）。
+                  </span>
+                  {' '}當淨空單 &gt; 3 萬口且總空單 &gt; 6 萬口時，可視為外資期貨避險全開，現貨易受高檔壓盤影響；
+                  淨空單逼近 4.5 萬口時，歷史上反而是極端空頭擠壓、底部潛在買點。
+                </div>
+              </div>
+            );
+          })()}
+        </motion.div>
+
         {/* 6b. 美股美債與台股大盤擇時決策儀表板 */}
         <div id="market-timing-dashboard" className="p-5 md:p-6 rounded-2xl bg-card border border-border-subtle hover:border-text-dim/20 transition-all duration-300 shadow-xl relative overflow-hidden mb-6">
           <div className="absolute top-0 right-0 w-48 h-48 bg-gradient-to-br from-indigo-500/5 via-transparent to-transparent rounded-full blur-2xl" />
@@ -3473,10 +3780,11 @@ export default function MarketSentiment() {
               let oasSignal: 'green' | 'yellow' | 'red' = isOasDanger ? 'red' : isOasBuy ? 'green' : 'yellow';
 
               // 3. Taiwan Margin
-              const twRatio = sentiment?.taiwanMargin?.maintenanceRatio ?? 153.2;
-              const twChange = sentiment?.taiwanMargin?.marginDailyChange ?? -12.0; // 億元
+              const twRatio = sentiment?.taiwanMargin?.maintenanceRatio ?? 156.27;
+              const twChange = sentiment?.taiwanMargin?.marginDailyChange ?? -50.0; // 萬張
               let isTwDanger = twRatio > 165;
-              let isTwBuy = twRatio < 135 && twChange < -6.0; // -6.0 億元
+              // 閾值：60 萬張 ≈ 60 億元（台股均價約 100 元，1 萬張 ≈ 1 億元）
+              let isTwBuy = twRatio < 135 && twChange < -60;
               let twSignal: 'green' | 'yellow' | 'red' = isTwDanger ? 'red' : isTwBuy ? 'green' : 'yellow';
 
               // Overall
@@ -3659,17 +3967,18 @@ export default function MarketSentiment() {
 
             {/* 指標 3：Taiwan Margin */}
             {(() => {
-              const twRatio      = sentiment?.taiwanMargin?.maintenanceRatio ?? 153.2;
+              const twRatio      = sentiment?.taiwanMargin?.maintenanceRatio ?? 156.27;
               const twRatioLive  = sentiment?.taiwanMargin?.maintenanceRatioIsLive ?? false;
               const twRatioDate  = sentiment?.taiwanMargin?.maintenanceRatioDate ?? '';
-              const twBalance    = sentiment?.taiwanMargin?.marginBalance ?? 1820.1;         // 億股
-              const twChange     = sentiment?.taiwanMargin?.marginDailyChange ?? -12.0;      // 億股
-              const twShort      = sentiment?.taiwanMargin?.shortBalance ?? 320.5;           // 融券億股
-              const twMsRatio    = sentiment?.taiwanMargin?.marginShortRatio ?? 5.7;         // 融資/融券倍數
-              const isLive       = sentiment?.taiwanMargin?.isLive ?? false;                 // 融資餘額是否 Live
+              const twBalance    = sentiment?.taiwanMargin?.marginBalance ?? 9350.0;   // 萬張
+              const twChange     = sentiment?.taiwanMargin?.marginDailyChange ?? -50.0; // 萬張
+              const twShort      = sentiment?.taiwanMargin?.shortBalance ?? 205.0;      // 萬張（融券）
+              const twMsRatio    = sentiment?.taiwanMargin?.marginShortRatio ?? 45.3;
+              const isLive       = sentiment?.taiwanMargin?.isLive ?? false;
 
               let isDanger = twRatio > 165;
-              let isBuy = twRatio < 135 && twChange < -6.0; // 融資大減 60億 (注意：API 回傳的 marginDailyChange 單位是億元，所以 -6.0 億元就是 -6.0)
+              // 閾值：60 萬張 ≈ 60 億元（台股均價 ~100 元，1 萬張 ≈ 1 億元）
+              let isBuy = twRatio < 135 && twChange < -60;
               let signal: 'green' | 'yellow' | 'red' = isDanger ? 'red' : isBuy ? 'green' : 'yellow';
 
               const statusText = {
@@ -3704,7 +4013,7 @@ export default function MarketSentiment() {
                       <span className="text-2xl font-mono font-black text-text-primary">{twRatio.toFixed(1)}%</span>
                       <span className="text-xs text-text-dim">維持率</span>
                       <span className={`text-xs font-mono ml-2 ${twChange < 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                        {twChange >= 0 ? `+${twChange.toFixed(1)}` : `${twChange.toFixed(1)}`} 億
+                        {twChange >= 0 ? `+${twChange.toFixed(1)}` : `${twChange.toFixed(1)}`} 萬張
                       </span>
                     </div>
 
@@ -3716,14 +4025,14 @@ export default function MarketSentiment() {
                       <div className="flex justify-between">
                         <span>融資單日增減:</span>
                         <span className={`font-mono ${twChange < 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                          {twChange >= 0 ? `+${twChange.toFixed(1)}` : `${twChange.toFixed(1)}`} 億
+                          {twChange >= 0 ? `+${twChange.toFixed(1)}` : `${twChange.toFixed(1)}`} 萬張
                         </span>
                       </div>
                       {/* 新增：融資餘額與融資/融券比 */}
                       <div className="flex justify-between items-center py-1 border-t border-border-subtle/20 mt-1">
                         <span className="text-text-dim">融資餘額:</span>
                         <span className="font-mono text-text-secondary">
-                          {twBalance.toFixed(1)} 億股
+                          {twBalance.toFixed(0)} 萬張
                           <span className={`ml-1.5 text-[9px] px-1.5 rounded font-bold ${isLive ? 'text-emerald-400 bg-emerald-500/10' : 'text-orange-400 bg-orange-500/10'}`}>
                             {isLive ? 'TWSE Live' : 'Fallback'}
                           </span>
@@ -3739,18 +4048,18 @@ export default function MarketSentiment() {
                         <span className="text-text-dim">維持率資料:</span>
                         <span className={`text-[9px] font-mono font-bold px-1.5 py-0.5 rounded ${
                           twRatioLive
-                            ? 'text-emerald-400 bg-emerald-500/10'
+                            ? 'text-sky-400 bg-sky-500/10'
                             : 'text-orange-400/70 bg-orange-500/5'
                         }`}>
                           {twRatioLive
-                            ? `TWSE Live · ${twRatioDate}`
-                            : '靜態備援（API 失敗）'}
+                            ? `估算值 · ${twRatioDate}`
+                            : '靜態備援（計算失敗）'}
                         </span>
                       </div>
                       <div className="pt-1.5 border-t border-border-subtle/50 text-[10px]">
                         <span>閾值：維持率 &gt; 165% ➔ <span className="text-rose-400">Danger</span></span>
                         <br />
-                        <span>閾值：維持率 &lt; 135% 且減少 &gt; 60 億 ➔ <span className="text-emerald-400">Buy</span></span>
+                        <span>閾值：維持率 &lt; 135% 且減少 &gt; 60 萬張 ➔ <span className="text-emerald-400">Buy</span></span>
                       </div>
                     </div>
                   </div>

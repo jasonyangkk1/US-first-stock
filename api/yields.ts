@@ -375,7 +375,7 @@ async function fetchFredSeries(seriesId: string, retries = 2): Promise<{ value: 
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
       const url = `${FRED_BASE_URL}?series_id=${seriesId}&api_key=${FRED_API_KEY}&file_type=json&sort_order=desc&limit=10`;
-      const res = await fetchWithTimeout(url, 6000); // Reduced timeout to 6 seconds
+      const res = await fetchWithTimeout(url, 10000); // 10s per request for higher reliability
       
       if (res.status === 429) {
         // Rate limit: backoff and retry

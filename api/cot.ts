@@ -5,6 +5,103 @@ const NASDAQ_API_KEY = process.env.NASDAQ_DATA_LINK_API_KEY; // 免費申請：d
 let cache: { data: any; ts: number } | null = null;
 const CACHE_TTL = 3600000; // 1小時
 
+// ── 台指期外資籌碼靜態備援（每週手動更新） ────────────────────────────
+const TW_FOREIGN_FALLBACK = {
+  date: '2026-08-07',
+  longOI: 30000,          // 外資多頭未平倉口數
+  shortOI: 65000,         // 外資空頭未平倉口數
+  netOI: -35000,          // 淨部位（負=淨空）
+  prevNetOI: -38000,      // 前一交易日淨部位
+  peakNetShortOI: 50000,  // 歷史最大淨空單口數（2024-08，取絕對值）
+  isLive: false,
+};
+
+// 從 FinMind 取台指期外資多空未平倉（主要來源）
+async function fetchTWForeignFromFinMind(): Promise<typeof TW_FOREIGN_FALLBACK | null> {
+  try {
+    // 取最近 5 個交易日，確保有前日資料做比較
+    const startDate = new Date(Date.now() - 8 * 86400000).toISOString().slice(0, 10);
+    const url = `https://api.finmindtrade.com/api/v4/data?dataset=TaiwanFuturesInstitutionalInvestors&data_id=TX&start_date=${startDate}`;
+    const res = await fetchWithTimeout(url, { headers: { Accept: 'application/json' } }, 9000);
+    if (!res.ok) return null;
+
+    const json: any = await res.json();
+    if (json?.status !== 200 || !Array.isArray(json?.data)) return null;
+
+    // 篩選外資，依日期排序（最新在後）
+    const foreignRows = json.data
+      .filter((r: any) => r.name === '外資及陸資' || r.name === '外資')
+      .sort((a: any, b: any) => a.date.localeCompare(b.date));
+
+    if (foreignRows.length === 0) return null;
+
+    const latest  = foreignRows[foreignRows.length - 1];
+    const prev    = foreignRows.length >= 2 ? foreignRows[foreignRows.length - 2] : null;
+
+    const longOI  = Number(latest.long_open_interest  ?? 0);
+    const shortOI = Number(latest.short_open_interest ?? 0);
+    const netOI   = Number(latest.net_open_interest   ?? (longOI - shortOI));
+    const prevNetOI = prev ? Number(prev.net_open_interest ?? 0) : netOI;
+
+    // 合理性驗證
+    if (shortOI < 0 || longOI < 0 || Math.abs(netOI) > 300000) return null;
+
+    // 改為追蹤「淨空單峰值」（取 netOI 最負的絕對值）
+    const peakNetShortOI = Math.max(
+      ...foreignRows.map((r: any) => Math.abs(Math.min(0, Number(r.net_open_interest ?? 0)))),
+      TW_FOREIGN_FALLBACK.peakNetShortOI
+    );
+
+    console.log(`[cot] TW foreign OK: net=${netOI}, long=${longOI}, short=${shortOI}, date=${latest.date}`);
+    return { date: latest.date, longOI, shortOI, netOI, prevNetOI, peakNetShortOI, isLive: true };
+  } catch (e) {
+    console.warn('[cot] FinMind TW foreign fetch failed:', (e as Error).message);
+    return null;
+  }
+}
+
+// 從 TAIFEX openapi 取台指期外資（備用來源）
+async function fetchTWForeignFromTaifex(): Promise<typeof TW_FOREIGN_FALLBACK | null> {
+  try {
+    const url = 'https://openapi.taifex.com.tw/v1/MarketDataOfMajorInstitutionalTradersDetailsOfFuturesContractsBytheDate';
+    const res = await fetchWithTimeout(url, { headers: { Accept: 'application/json' } }, 8000);
+    if (!res.ok) return null;
+
+    const raw: any[] = await res.json();
+    if (!Array.isArray(raw) || raw.length === 0) return null;
+
+    const row = raw.find((r: any) =>
+      (r.ContractCode === '臺股期貨' || r.ContractCode === 'TX' || r.FuturesID === 'TX') &&
+      (r.Item === '外資及陸資' || r.Item === '外資' || r.IdentityType === '外資及陸資' || r.IdentityType === '外資')
+    );
+    if (!row) return null;
+
+    const longOI  = Number(row['OpenInterest(Long)'] ?? row.LongOpenInterest ?? row.long_open_interest ?? 0);
+    const shortOI = Number(row['OpenInterest(Short)'] ?? row.ShortOpenInterest ?? row.short_open_interest ?? 0);
+    const netOI   = Number(row['OpenInterest(Net)'] ?? (longOI - shortOI));
+    const rawDate = String(row.Date ?? '');
+    const dateStr = rawDate.length === 8 ? `${rawDate.slice(0,4)}-${rawDate.slice(4,6)}-${rawDate.slice(6,8)}` : TW_FOREIGN_FALLBACK.date;
+
+    console.log(`[cot] TAIFEX TW foreign OK: net=${netOI}, date=${dateStr}`);
+    return {
+      date: dateStr,
+      longOI, shortOI, netOI,
+      prevNetOI: TW_FOREIGN_FALLBACK.prevNetOI,
+      peakNetShortOI: TW_FOREIGN_FALLBACK.peakNetShortOI,
+      isLive: true,
+    };
+  } catch (e) {
+    console.warn('[cot] TAIFEX TW foreign fetch failed:', (e as Error).message);
+    return null;
+  }
+}
+
+// 取台指期外資籌碼（主備並行）
+async function fetchTWForeignShort(): Promise<typeof TW_FOREIGN_FALLBACK> {
+  const result = await fetchTWForeignFromFinMind() ?? await fetchTWForeignFromTaifex();
+  return result ?? TW_FOREIGN_FALLBACK;
+}
+
 async function fetchWithTimeout(url: string, init?: RequestInit, timeoutMs = 8000) {
   let timeoutId: any = null;
   let signal: AbortSignal | undefined = undefined;
@@ -244,6 +341,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     warningThreshold = Math.round(peakShort * 0.65);
   }
 
+  // 並行取台指期外資籌碼
+  const twForeign = await fetchTWForeignShort();
+
   const results = {
     currentShort,
     peakShort,
@@ -257,6 +357,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     dataSource,
     dangerThreshold,
     warningThreshold,
+    twForeign,                          // ← 新增台指期外資籌碼
     updatedAt: new Date().toISOString()
   };
 

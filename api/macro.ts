@@ -241,7 +241,7 @@ async function fetchFred(seriesId: string, limit = 16, retries = 2) {
   const url = `${FRED_BASE_URL}?series_id=${seriesId}&api_key=${FRED_API_KEY}&file_type=json&sort_order=desc&limit=${limit}`;
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
-      const res = await fetchWithTimeout(url, 6000); // 6s per request to leave time for retries
+      const res = await fetchWithTimeout(url, 10000); // 10s per request for higher reliability
       if (res.status === 429) {
         console.warn(`[macro] Rate limited for ${seriesId}, attempt ${attempt + 1}/${retries + 1}`);
         const delayMs = Math.pow(2, attempt) * 1000 + Math.random() * 500;
