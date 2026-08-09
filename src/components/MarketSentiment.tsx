@@ -3461,9 +3461,9 @@ export default function MarketSentiment() {
             const netChange = netOI - prevNetOI;
             // 當前淨空強度（正值）
             const netShortAbs = Math.max(0, -netOI);
-            // 相對歷史峰值佔比
+            // 相對歷史峰值佔比（不設上限，超過 100% 代表突破歷史峰值）
             const peakPct = peakNetShortOI > 0
-              ? Math.min(100, (netShortAbs / peakNetShortOI) * 100)
+              ? Math.round((netShortAbs / peakNetShortOI) * 100)
               : 0;
 
             // ── 三段式信號（以淨空口數為判斷基準）──
@@ -3478,6 +3478,7 @@ export default function MarketSentiment() {
             const signalMap = {
               bull: {
                 emoji: '🟢', label: '外資淨多 · 偏多台股',
+                shortDesc: '外資賭漲多於賭跌，指數有支撐。',
                 desc: '外資持有淨多頭部位，機構看多台股，有助支撐指數方向。',
                 alertBg: 'bg-emerald-500/10', alertBorder: 'border-emerald-500/30',
                 alertText: 'text-emerald-400', cardBorder: 'border-emerald-500/20',
@@ -3485,6 +3486,7 @@ export default function MarketSentiment() {
               },
               safe: {
                 emoji: '🟢', label: '安全區 · 外資避險情緒低',
+                shortDesc: '外資賭跌不多，市場恐慌程度低。',
                 desc: '外資淨空單低於 1.5 萬口，期貨避險需求弱，有利多頭格局延續。',
                 alertBg: 'bg-emerald-500/8', alertBorder: 'border-emerald-500/20',
                 alertText: 'text-emerald-400', cardBorder: 'border-emerald-500/15',
@@ -3492,13 +3494,15 @@ export default function MarketSentiment() {
               },
               caution: {
                 emoji: '🟡', label: '警戒區 · 外資開始壓盤避險',
+                shortDesc: '外資賭跌增加，盤勢容易高檔震盪。',
                 desc: '外資淨空單介於 1.5~3 萬口，機構加強期貨避險，盤勢容易在高檔震盪。',
                 alertBg: 'bg-yellow-500/8', alertBorder: 'border-yellow-500/25',
                 alertText: 'text-yellow-400', cardBorder: 'border-yellow-500/20',
                 barColor: 'bg-yellow-500',
               },
               danger: {
-                emoji: '🔴', label: '極端危險區 · 外資期貨布滿空單',
+                emoji: '🔴', label: '極端危險區 · 外資期貨空單鎖死',
+                shortDesc: '現貨隨時有大甩尾拋售風險！',
                 desc: '外資淨空單超過 3 萬口，接近歷史峰值（4.5~5 萬口）。現貨稍有風吹草動，即可能發動大平倉或現貨暴砍，隨時有洗盤風險。',
                 alertBg: 'bg-rose-500/10', alertBorder: 'border-rose-500/30',
                 alertText: 'text-rose-400', cardBorder: 'border-rose-500/25',
@@ -3506,19 +3510,19 @@ export default function MarketSentiment() {
               },
             }[signal];
 
-            // 中軸進度條：範圍 -50000（極端淨空）~ +30000（極端淨多）
-            // 0 在整條的 50000/(50000+30000) ≈ 62.5% 位置
-            const AXIS_LEFT  = 50000; // 左端（極端淨空）
-            const AXIS_RIGHT = 30000; // 右端（極端淨多）
-            const AXIS_TOTAL = AXIS_LEFT + AXIS_RIGHT; // 80000
-            // 當前位置百分比（0%=最左端極端淨空，100%=最右端極端淨多）
-            const axisPct = Math.min(100, Math.max(0, (netOI + AXIS_LEFT) / AXIS_TOTAL * 100));
-            // 零點（中性）的百分比位置
-            const zeroAxisPct = AXIS_LEFT / AXIS_TOTAL * 100; // 62.5%
-            // 警戒線位置（-15000）
-            const cautionAxisPct = (-15000 + AXIS_LEFT) / AXIS_TOTAL * 100; // 43.75%
-            // 危險線位置（-30000）
-            const dangerAxisPct  = (-30000 + AXIS_LEFT) / AXIS_TOTAL * 100; // 25%
+            // 中軸進度條：動態範圍（當 netOI 超出預設左端時自動擴展）
+            const AXIS_RIGHT = 30000; // 右端（極端淨多，固定）
+            // 左端動態擴展：至少 50000，或比當前淨空再多 10000（保留餘裕）
+            const AXIS_LEFT  = Math.max(50000, netShortAbs + 10000);
+            const AXIS_TOTAL = AXIS_LEFT + AXIS_RIGHT;
+            const axisPct       = (netOI + AXIS_LEFT) / AXIS_TOTAL * 100; // 不需 clamp，動態範圍保證在內
+            const zeroAxisPct   = AXIS_LEFT / AXIS_TOTAL * 100;
+            // 歷史事件刻度位置（精確口數，來源：台期所三大法人歷史記錄）
+            const event2020Pct  = (-32000 + AXIS_LEFT) / AXIS_TOTAL * 100; // 2020/03 新冠股災 -3.2萬口
+            const event2021Pct  = (-40000 + AXIS_LEFT) / AXIS_TOTAL * 100; // 2021/05 三級警戒 -4.0萬口
+            const event2024Pct  = (-48000 + AXIS_LEFT) / AXIS_TOTAL * 100; // 2024/08 日圓平倉 -4.8萬口
+            const cautionAxisPct = (-15000 + AXIS_LEFT) / AXIS_TOTAL * 100; // 警戒線 -1.5萬口
+            const dangerAxisPct  = (-30000 + AXIS_LEFT) / AXIS_TOTAL * 100; // 危險線 -3萬口
 
             return (
               <div>
@@ -3545,14 +3549,21 @@ export default function MarketSentiment() {
                   </div>
                 </div>
 
-                {/* ── 三段式 Alert 橫幅 ── */}
-                <div className={`rounded-xl px-4 py-3 border mb-5 ${signalMap.alertBg} ${signalMap.alertBorder}`}>
-                  <div className={`text-sm font-bold ${signalMap.alertText} mb-1`}>
-                    {signalMap.emoji} {signalMap.label}
+                {/* ── 一句話 Alert 橫幅 ── */}
+                <div className={`rounded-xl px-4 py-2.5 border mb-5 flex items-center gap-3 ${signalMap.alertBg} ${signalMap.alertBorder}`}>
+                  <span className="text-lg flex-shrink-0">{signalMap.emoji}</span>
+                  <div className="flex-1 min-w-0">
+                    <span className={`text-[11px] font-bold ${signalMap.alertText}`}>
+                      {signalMap.label}
+                    </span>
+                    <span className="text-[10px] text-text-dim/70 ml-2">
+                      {signalMap.shortDesc}
+                    </span>
                   </div>
-                  <p className="text-[11px] text-text-dim/80 leading-relaxed">
-                    {signalMap.desc}
-                  </p>
+                  {/* 白話文標籤 */}
+                  <span className="text-[9px] text-text-dim/40 font-mono flex-shrink-0 hidden md:block">
+                    空單 = 外資下注台股會跌
+                  </span>
                 </div>
 
                 {/* ── 主指標：淨部位 ── */}
@@ -3587,11 +3598,14 @@ export default function MarketSentiment() {
                           （2024/08）
                         </span>
                         <span className={`text-[10px] font-bold font-mono px-1.5 py-0.5 rounded ${
-                          peakPct > 80 ? 'text-rose-400 bg-rose-500/15' :
-                          peakPct > 50 ? 'text-orange-400 bg-orange-500/15' :
+                          peakPct > 100 ? 'text-rose-300 bg-rose-500/25 animate-pulse' :
+                          peakPct > 80  ? 'text-rose-400 bg-rose-500/15' :
+                          peakPct > 50  ? 'text-orange-400 bg-orange-500/15' :
                           'text-yellow-400 bg-yellow-500/10'
                         }`}>
-                          佔峰值 {peakPct.toFixed(0)}%
+                          {peakPct > 100
+                            ? `⚠ 突破歷史峰值！${peakPct}%`
+                            : `佔峰值 ${peakPct}%`}
                         </span>
                       </div>
                       {/* 總空單對比（次要，以斜體小字區分） */}
@@ -3644,69 +3658,84 @@ export default function MarketSentiment() {
                   </div>
                 </div>
 
-                {/* ── 淨部位中軸計量條（合併版）── */}
+                {/* ── 淨部位歷史事件計量條 ── */}
                 <div className="mb-5">
-                  <div className="flex justify-between text-[9px] text-text-dim/50 font-mono mb-2">
-                    <span className="text-rose-400/70">← 極端淨空（-5萬口）</span>
-                    <span className="text-text-dim/40">淨部位情緒計量</span>
+                  <div className="flex justify-between items-center text-[9px] text-text-dim/50 font-mono mb-3">
+                    <span className="text-rose-400/70">
+                      ← 極端淨空（{`-${(AXIS_LEFT / 10000).toFixed(0)}`}萬口）
+                    </span>
+                    <span className="text-text-dim/40">外資淨部位歷史對照</span>
                     <span className="text-emerald-400/70">極端淨多（+3萬口）→</span>
                   </div>
 
-                  {/* 計量條軌道 */}
-                  <div className="relative h-5">
-                    {/* 背景軌道（三色區段）*/}
-                    <div className="absolute inset-0 rounded-full overflow-hidden flex">
-                      {/* 危險區（左側，0~25%）*/}
-                      <div className="bg-rose-500/20" style={{ width: `${dangerAxisPct}%` }} />
-                      {/* 警戒區（25%~43.75%）*/}
+                  {/* 計量條主體（加高，以容納事件標記） */}
+                  <div className="relative" style={{ height: '56px' }}>
+                    {/* 軌道背景（三色區段）*/}
+                    <div className="absolute left-0 right-0 rounded-full overflow-hidden flex" style={{ top: '12px', height: '8px' }}>
+                      <div className="bg-rose-500/25" style={{ width: `${dangerAxisPct}%` }} />
                       <div className="bg-yellow-500/15" style={{ width: `${cautionAxisPct - dangerAxisPct}%` }} />
-                      {/* 安全/多頭區（43.75%~100%）*/}
                       <div className="bg-emerald-500/10 flex-1" />
                     </div>
 
-                    {/* 危險線標記（-30000）*/}
+                    {/* 歷史事件刻度線 + 標籤（由左至右排列在軌道上方） */}
+                    {[
+                      { pct: event2020Pct, label: '2020/03', sub: '新冠 -3.2萬', color: 'text-orange-400/70', lineColor: 'bg-orange-400/40' },
+                      { pct: event2021Pct, label: '2021/05', sub: '三級 -4.0萬', color: 'text-orange-500/70', lineColor: 'bg-orange-500/50' },
+                      { pct: event2024Pct, label: '2024/08', sub: '峰值 -4.8萬', color: 'text-rose-400/80', lineColor: 'bg-rose-400/60' },
+                    ].filter(e => e.pct >= 2 && e.pct <= 98).map((e) => (
+                      <div key={e.label} className="absolute" style={{ left: `${e.pct}%`, top: 0 }}>
+                        {/* 垂直刻度線 */}
+                        <div className={`absolute w-px ${e.lineColor}`} style={{ left: 0, top: '12px', height: '8px', transform: 'translateX(-50%)' }} />
+                        {/* 上方標籤（事件名） */}
+                        <div className="absolute" style={{ top: '-2px', left: '50%', transform: 'translateX(-50%)', whiteSpace: 'nowrap' }}>
+                          <span className={`text-[7px] font-mono ${e.color} block text-center leading-none`}>{e.label}</span>
+                          <span className={`text-[6px] font-mono ${e.color} block text-center opacity-70 leading-none`}>{e.sub}</span>
+                        </div>
+                      </div>
+                    ))}
+
+                    {/* 零點線 */}
                     <div
-                      className="absolute top-0 bottom-0 w-px bg-rose-500/50"
-                      style={{ left: `${dangerAxisPct}%` }}
-                    />
-                    {/* 警戒線標記（-15000）*/}
-                    <div
-                      className="absolute top-0 bottom-0 w-px bg-yellow-500/50"
-                      style={{ left: `${cautionAxisPct}%` }}
-                    />
-                    {/* 零點線（中性）*/}
-                    <div
-                      className="absolute top-0 bottom-0 w-0.5 bg-text-dim/30"
-                      style={{ left: `${zeroAxisPct}%` }}
+                      className="absolute bg-text-dim/25"
+                      style={{ left: `${zeroAxisPct}%`, top: '10px', width: '1px', height: '12px', transform: 'translateX(-50%)' }}
                     />
 
-                    {/* 當前位置指針 */}
+                    {/* 警戒線（-1.5萬） */}
                     <div
-                      className="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 transition-all duration-1000"
-                      style={{ left: `${axisPct}%` }}
+                      className="absolute bg-yellow-500/40"
+                      style={{ left: `${cautionAxisPct}%`, top: '10px', width: '1px', height: '12px', transform: 'translateX(-50%)' }}
+                    />
+
+                    {/* 當前位置指針（大圓點 + 發光） */}
+                    <div
+                      className="absolute transition-all duration-1000"
+                      style={{ left: `${Math.min(98, Math.max(2, axisPct))}%`, top: '8px', transform: 'translateX(-50%)' }}
                     >
-                      <div className={`w-4 h-4 rounded-full border-2 border-card-bg shadow-lg ${signalMap.barColor}`} />
+                      <div className={`w-5 h-5 rounded-full border-2 border-card-bg shadow-lg ${signalMap.barColor} ${signal === 'danger' ? 'animate-pulse' : ''}`} />
                     </div>
-                  </div>
 
-                  {/* 軸線標籤 */}
-                  <div className="relative mt-1 h-4">
-                    <span className="absolute text-[8px] text-rose-400/60 font-mono" style={{ left: `${dangerAxisPct}%`, transform: 'translateX(-50%)' }}>
-                      -3萬
-                    </span>
-                    <span className="absolute text-[8px] text-yellow-400/60 font-mono" style={{ left: `${cautionAxisPct}%`, transform: 'translateX(-50%)' }}>
-                      -1.5萬
-                    </span>
-                    <span className="absolute text-[8px] text-text-dim/40 font-mono" style={{ left: `${zeroAxisPct}%`, transform: 'translateX(-50%)' }}>
-                      0
-                    </span>
-                    {/* 當前值標籤 */}
-                    <span
-                      className={`absolute text-[9px] font-bold font-mono ${signalMap.alertText} transition-all duration-1000`}
-                      style={{ left: `${axisPct}%`, transform: 'translateX(-50%)', top: '0px' }}
-                    >
-                      {(netOI / 10000).toFixed(1)}萬
-                    </span>
+                    {/* 軸線數值標籤（下方） */}
+                    <div className="absolute left-0 right-0" style={{ top: '28px' }}>
+                      {/* 零點標籤 */}
+                      <span className="absolute text-[8px] text-text-dim/35 font-mono" style={{ left: `${zeroAxisPct}%`, transform: 'translateX(-50%)' }}>
+                        0
+                      </span>
+                      {/* 警戒線標籤 */}
+                      <span className="absolute text-[8px] text-yellow-400/50 font-mono" style={{ left: `${cautionAxisPct}%`, transform: 'translateX(-50%)' }}>
+                        -1.5萬
+                      </span>
+                      {/* 危險線標籤 */}
+                      <span className="absolute text-[8px] text-rose-400/50 font-mono" style={{ left: `${dangerAxisPct}%`, transform: 'translateX(-50%)' }}>
+                        -3萬
+                      </span>
+                      {/* 當前值標籤（跟隨指針） */}
+                      <span
+                        className={`absolute text-[9px] font-bold font-mono ${signalMap.alertText} transition-all duration-1000`}
+                        style={{ left: `${Math.min(92, Math.max(8, axisPct))}%`, transform: 'translateX(-50%)', top: '14px' }}
+                      >
+                        ▲ {(netOI / 10000).toFixed(1)}萬
+                      </span>
+                    </div>
                   </div>
                 </div>
 
@@ -3733,14 +3762,26 @@ export default function MarketSentiment() {
                   </div>
                 </div>
 
-                {/* ── 底部說明 ── */}
-                <div className="mt-4 pt-3 border-t border-border-subtle/20 text-[9px] text-text-dim/40 leading-relaxed font-mono">
-                  來源：台灣期貨交易所（TAIFEX）三大法人台指期未平倉 · 每日盤後更新。
-                  <span className="text-text-dim/55">
-                    外資淨空單歷史峰值約 4.5~5 萬口（對應總空單歷史峰值約 8 萬口，均發生於 2024/08 黑天鵝事件）。
-                  </span>
-                  {' '}當淨空單 &gt; 3 萬口且總空單 &gt; 6 萬口時，可視為外資期貨避險全開，現貨易受高檔壓盤影響；
-                  淨空單逼近 4.5 萬口時，歷史上反而是極端空頭擠壓、底部潛在買點。
+                {/* ── 底部說明 + 實戰規律 ── */}
+                <div className="mt-4 pt-3 border-t border-border-subtle/20 space-y-2">
+                  <div className="text-[9px] text-text-dim/40 leading-relaxed font-mono">
+                    來源：台灣期貨交易所（TAIFEX）三大法人台指期近月合約未平倉 · 每日盤後更新。
+                    外資淨空峰值 ≈ 4.5~5 萬口（總空單峰值 ≈ 8 萬口，均見於 2024/08 日圓平倉風暴）。
+                    當淨空 &gt; 3 萬口且總空單 &gt; 6 萬口：外資避險鎖死，現貨易受高檔壓盤。
+                    淨空逼近 4.5 萬口時，歷史上反而是極端空頭擠壓的底部買點。
+                  </div>
+                  {/* 實戰鋼鐵規律 */}
+                  <div className="rounded-lg bg-white/3 border border-border-subtle/20 px-3 py-2 space-y-1">
+                    <div className="text-[9px] text-text-dim/50 font-mono uppercase tracking-wider mb-1">歷史給的 2 個鋼鐵規律</div>
+                    <div className="flex items-start gap-2 text-[9px] text-text-dim/60 leading-relaxed">
+                      <span className="text-yellow-400/80 flex-shrink-0">⚡ 短期</span>
+                      <span>淨空 &gt; 3.5 萬口時，外資必利用現貨倒貨或利空消息向下搥擊，引發散戶多殺多（融資斷頭），讓期貨空單大賺離場。</span>
+                    </div>
+                    <div className="flex items-start gap-2 text-[9px] text-text-dim/60 leading-relaxed">
+                      <span className="text-emerald-400/80 flex-shrink-0">📈 中長期</span>
+                      <span>歷史每次外資淨空摸到 -4 ~ -5 萬口極限，都是市場恐慌壓到頂。一旦空單開始大舉回補（單日減少千口以上），往往就是台股波段底部最佳買點。</span>
+                    </div>
+                  </div>
                 </div>
               </div>
             );

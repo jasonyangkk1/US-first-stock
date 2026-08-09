@@ -2176,40 +2176,103 @@ async function startServer() {
     };
 
     // 從 FinMind 取台指期外資多空未平倉（主要來源）
+    // 正確換算：大台等值口數 = TX近月口數 + MTX近月口數 ÷ 4
     const fetchTWForeignFromFinMind = async (): Promise<typeof TW_FOREIGN_FALLBACK | null> => {
       try {
         const startDate = new Date(Date.now() - 8 * 86400000).toISOString().slice(0, 10);
-        const url = `https://api.finmindtrade.com/api/v4/data?dataset=TaiwanFuturesInstitutionalInvestors&data_id=TX&start_date=${startDate}`;
-        const res = await fetchWithTimeout(url, { headers: { Accept: 'application/json' } }, 9000);
-        if (!res.ok) return null;
 
-        const json: any = await res.json();
-        if (json?.status !== 200 || !Array.isArray(json?.data)) return null;
+        const [txRes, mtxRes] = await Promise.all([
+          fetchWithTimeout(
+            `https://api.finmindtrade.com/api/v4/data?dataset=TaiwanFuturesInstitutionalInvestors&data_id=TX&start_date=${startDate}`,
+            { headers: { Accept: 'application/json' } }, 9000
+          ).catch(() => null),
+          fetchWithTimeout(
+            `https://api.finmindtrade.com/api/v4/data?dataset=TaiwanFuturesInstitutionalInvestors&data_id=MTX&start_date=${startDate}`,
+            { headers: { Accept: 'application/json' } }, 9000
+          ).catch(() => null),
+        ]);
 
-        const foreignRows = json.data
-          .filter((r: any) => r.name === '外資及陸資' || r.name === '外資')
-          .sort((a: any, b: any) => a.date.localeCompare(b.date));
+        const txJson:  any = txRes?.ok  ? await txRes.json()  : null;
+        const mtxJson: any = mtxRes?.ok ? await mtxRes.json() : null;
 
-        if (foreignRows.length === 0) return null;
+        if (txJson?.status !== 200 && mtxJson?.status !== 200) return null;
 
-        const latest  = foreignRows[foreignRows.length - 1];
-        const prev    = foreignRows.length >= 2 ? foreignRows[foreignRows.length - 2] : null;
+        function extractNearMonthOI(
+          jsonData: any,
+          targetDate: string
+        ): { longOI: number; shortOI: number; netOI: number } | null {
+          if (!jsonData || jsonData.status !== 200 || !Array.isArray(jsonData.data)) return null;
 
-        const longOI  = Number(latest.long_open_interest  ?? 0);
-        const shortOI = Number(latest.short_open_interest ?? 0);
-        const netOI   = Number(latest.net_open_interest   ?? (longOI - shortOI));
-        const prevNetOI = prev ? Number(prev.net_open_interest ?? 0) : netOI;
+          const isValidContractDate = (cd: string) => !cd || /^\d{6}$/.test(String(cd ?? ''));
 
-        if (shortOI < 0 || longOI < 0 || Math.abs(netOI) > 300000) return null;
+          const rows = jsonData.data.filter((r: any) => {
+            const name = r.institutional_investors || r.name;
+            return (name === '外資及陸資' || name === '外資') &&
+              r.date === targetDate &&
+              isValidContractDate(r.contract_date);
+          });
+          if (rows.length === 0) return null;
 
-        // 改為追蹤「淨空單峰值」（取 netOI 最負的絕對值）
-        const peakNetShortOI = Math.max(
-          ...foreignRows.map((r: any) => Math.abs(Math.min(0, Number(r.net_open_interest ?? 0)))),
-          TW_FOREIGN_FALLBACK.peakNetShortOI
-        );
+          const validRows = rows.filter((r: any) => {
+            const l = Number(r.long_open_interest_balance_volume ?? r.long_open_interest ?? 0);
+            const s = Number(r.short_open_interest_balance_volume ?? r.short_open_interest ?? 0);
+            return (l + s) <= 80000;
+          });
+          const candidates = validRows.length > 0 ? validRows : rows;
 
-        console.log(`[cot server] TW foreign OK: net=${netOI}, long=${longOI}, short=${shortOI}, date=${latest.date}`);
-        return { date: latest.date, longOI, shortOI, netOI, prevNetOI, peakNetShortOI, isLive: true };
+          const main = candidates.reduce((best: any, cur: any) => {
+            const bestLong = Number(best?.long_open_interest_balance_volume ?? best?.long_open_interest ?? 0);
+            const bestShort = Number(best?.short_open_interest_balance_volume ?? best?.short_open_interest ?? 0);
+            const bestTotal = bestLong + bestShort;
+
+            const curLong = Number(cur?.long_open_interest_balance_volume ?? cur?.long_open_interest ?? 0);
+            const curShort = Number(cur?.short_open_interest_balance_volume ?? cur?.short_open_interest ?? 0);
+            const curTotal = curLong + curShort;
+
+            return curTotal > bestTotal ? cur : best;
+          }, candidates[0]);
+
+          if (!main) return null;
+
+          const longOI  = Number(main.long_open_interest_balance_volume  ?? main.long_open_interest  ?? 0);
+          const shortOI = Number(main.short_open_interest_balance_volume ?? main.short_open_interest ?? 0);
+          const netOI   = Number(main.net_open_interest   ?? (longOI - shortOI));
+          return { longOI, shortOI, netOI };
+        }
+
+        const allDates = [
+          ...(txJson?.data  ?? []).filter((r: any) => (r.institutional_investors || r.name) === '外資及陸資' || (r.institutional_investors || r.name) === '外資').map((r: any) => r.date as string),
+          ...(mtxJson?.data ?? []).filter((r: any) => (r.institutional_investors || r.name) === '外資及陸資' || (r.institutional_investors || r.name) === '外資').map((r: any) => r.date as string),
+        ].sort();
+        const latestDate = allDates[allDates.length - 1];
+        if (!latestDate) return null;
+
+        const prevDate = allDates.filter(d => d < latestDate).pop();
+
+        const txToday  = extractNearMonthOI(txJson,  latestDate);
+        const mtxToday = extractNearMonthOI(mtxJson, latestDate);
+        const txPrev   = prevDate ? extractNearMonthOI(txJson,  prevDate) : null;
+        const mtxPrev  = prevDate ? extractNearMonthOI(mtxJson, prevDate) : null;
+
+        if (!txToday && !mtxToday) return null;
+
+        const longOI  = Math.round((txToday?.longOI  ?? 0) + (mtxToday?.longOI  ?? 0) / 4);
+        const shortOI = Math.round((txToday?.shortOI ?? 0) + (mtxToday?.shortOI ?? 0) / 4);
+        const netOI   = Math.round((txToday?.netOI   ?? 0) + (mtxToday?.netOI   ?? 0) / 4);
+
+        const prevNetOI = txPrev || mtxPrev
+          ? Math.round((txPrev?.netOI ?? 0) + (mtxPrev?.netOI ?? 0) / 4)
+          : netOI;
+
+        if (Math.abs(netOI) > 100000) {
+          console.warn(`[cot server] TW foreign OI looks too large after conversion: net=${netOI}, skipping`);
+          return null;
+        }
+
+        const peakNetShortOI = TW_FOREIGN_FALLBACK.peakNetShortOI;
+
+        console.log(`[cot server] TW foreign OK (TX+MTX/4): net=${netOI}, long=${longOI}, short=${shortOI}, date=${latestDate}`);
+        return { date: latestDate, longOI, shortOI, netOI, prevNetOI, peakNetShortOI, isLive: true };
       } catch (e) {
         console.warn('[cot server] FinMind TW foreign fetch failed:', (e as Error).message);
         return null;
