@@ -3510,19 +3510,21 @@ export default function MarketSentiment() {
               },
             }[signal];
 
-            // 中軸進度條：動態範圍（當 netOI 超出預設左端時自動擴展）
-            const AXIS_RIGHT = 30000; // 右端（極端淨多，固定）
-            // 左端動態擴展：至少 50000，或比當前淨空再多 10000（保留餘裕）
-            const AXIS_LEFT  = Math.max(50000, netShortAbs + 10000);
-            const AXIS_TOTAL = AXIS_LEFT + AXIS_RIGHT;
-            const axisPct       = (netOI + AXIS_LEFT) / AXIS_TOTAL * 100; // 不需 clamp，動態範圍保證在內
-            const zeroAxisPct   = AXIS_LEFT / AXIS_TOTAL * 100;
-            // 歷史事件刻度位置（精確口數，來源：台期所三大法人歷史記錄）
-            const event2020Pct  = (-32000 + AXIS_LEFT) / AXIS_TOTAL * 100; // 2020/03 新冠股災 -3.2萬口
-            const event2021Pct  = (-40000 + AXIS_LEFT) / AXIS_TOTAL * 100; // 2021/05 三級警戒 -4.0萬口
-            const event2024Pct  = (-48000 + AXIS_LEFT) / AXIS_TOTAL * 100; // 2024/08 日圓平倉 -4.8萬口
-            const cautionAxisPct = (-15000 + AXIS_LEFT) / AXIS_TOTAL * 100; // 警戒線 -1.5萬口
-            const dangerAxisPct  = (-30000 + AXIS_LEFT) / AXIS_TOTAL * 100; // 危險線 -3萬口
+            // 中軸進度條：標定範圍 (X軸: -5.0萬口 至 +3.0萬口，全寬 80000口)
+            const AXIS_LEFT  = 50000; // 左端 -5.0 萬口 (歷史天花板極限)
+            const AXIS_RIGHT = 30000; // 右端 +3.0 萬口 (極端淨多)
+            const AXIS_TOTAL = AXIS_LEFT + AXIS_RIGHT; // 80000口
+            
+            // 精確趴數對齊邏輯
+            const axisPct       = Math.min(98, Math.max(2, (netOI + AXIS_LEFT) / AXIS_TOTAL * 100));
+            const zeroAxisPct   = (0 + AXIS_LEFT) / AXIS_TOTAL * 100;      // 62.5% (0 萬口 中性界線)
+            const cautionAxisPct = (-15000 + AXIS_LEFT) / AXIS_TOTAL * 100; // 43.75% (-1.5萬口 安全區界線)
+            const dangerAxisPct  = (-30000 + AXIS_LEFT) / AXIS_TOTAL * 100; // 25.0% (-3.0萬口 警戒區界線)
+
+            // 歷史事件對齊趴數 (來源：台灣期交所外資未平倉歷史記錄)
+            const event2020Pct  = (-32000 + AXIS_LEFT) / AXIS_TOTAL * 100; // 22.5% (2020/03 新冠股災 -3.2萬)
+            const event2021Pct  = (-40000 + AXIS_LEFT) / AXIS_TOTAL * 100; // 12.5% (2021/05 三級警戒 -4.0萬)
+            const event2024Pct  = (-48000 + AXIS_LEFT) / AXIS_TOTAL * 100; // 2.5%  (2024/08 日圓平倉峰值 -4.8萬)
 
             return (
               <div>
@@ -3659,82 +3661,93 @@ export default function MarketSentiment() {
                 </div>
 
                 {/* ── 淨部位歷史事件計量條 ── */}
-                <div className="mb-5">
-                  <div className="flex justify-between items-center text-[9px] text-text-dim/50 font-mono mb-3">
+                <div className="mb-5 bg-white/2 rounded-xl p-4 border border-border-subtle/30 overflow-hidden">
+                  <div className="flex justify-between items-center text-[9px] text-text-dim/50 font-mono mb-3 px-2">
                     <span className="text-rose-400/70">
                       ← 極端淨空（{`-${(AXIS_LEFT / 10000).toFixed(0)}`}萬口）
                     </span>
-                    <span className="text-text-dim/40">外資淨部位歷史對照</span>
+                    <span className="text-text-dim/60 font-semibold">外資淨部位歷史對照</span>
                     <span className="text-emerald-400/70">極端淨多（+3萬口）→</span>
                   </div>
 
-                  {/* 計量條主體（加高，以容納事件標記） */}
-                  <div className="relative" style={{ height: '56px' }}>
-                    {/* 軌道背景（三色區段）*/}
-                    <div className="absolute left-0 right-0 rounded-full overflow-hidden flex" style={{ top: '12px', height: '8px' }}>
-                      <div className="bg-rose-500/25" style={{ width: `${dangerAxisPct}%` }} />
-                      <div className="bg-yellow-500/15" style={{ width: `${cautionAxisPct - dangerAxisPct}%` }} />
-                      <div className="bg-emerald-500/10 flex-1" />
-                    </div>
-
-                    {/* 歷史事件刻度線 + 標籤（由左至右排列在軌道上方） */}
-                    {[
-                      { pct: event2020Pct, label: '2020/03', sub: '新冠 -3.2萬', color: 'text-orange-400/70', lineColor: 'bg-orange-400/40' },
-                      { pct: event2021Pct, label: '2021/05', sub: '三級 -4.0萬', color: 'text-orange-500/70', lineColor: 'bg-orange-500/50' },
-                      { pct: event2024Pct, label: '2024/08', sub: '峰值 -4.8萬', color: 'text-rose-400/80', lineColor: 'bg-rose-400/60' },
-                    ].filter(e => e.pct >= 2 && e.pct <= 98).map((e) => (
-                      <div key={e.label} className="absolute" style={{ left: `${e.pct}%`, top: 0 }}>
-                        {/* 垂直刻度線 */}
-                        <div className={`absolute w-px ${e.lineColor}`} style={{ left: 0, top: '12px', height: '8px', transform: 'translateX(-50%)' }} />
-                        {/* 上方標籤（事件名） */}
-                        <div className="absolute" style={{ top: '-2px', left: '50%', transform: 'translateX(-50%)', whiteSpace: 'nowrap' }}>
-                          <span className={`text-[7px] font-mono ${e.color} block text-center leading-none`}>{e.label}</span>
-                          <span className={`text-[6px] font-mono ${e.color} block text-center opacity-70 leading-none`}>{e.sub}</span>
-                        </div>
+                  {/* 計量條主體（兩側加上 px-10 / px-14 防護邊距，防止 0% 或 100% 標籤與圓點溢出邊框） */}
+                  <div className="relative px-8 sm:px-12 pt-2 pb-1">
+                    <div className="relative" style={{ height: '68px' }}>
+                      {/* 軌道背景（三色區段）*/}
+                      <div className="absolute left-0 right-0 rounded-full overflow-hidden flex shadow-inner" style={{ top: '18px', height: '10px' }}>
+                        <div className="bg-rose-500/30" style={{ width: `${dangerAxisPct}%` }} />
+                        <div className="bg-yellow-500/20" style={{ width: `${cautionAxisPct - dangerAxisPct}%` }} />
+                        <div className="bg-emerald-500/15" style={{ width: `${zeroAxisPct - cautionAxisPct}%` }} />
+                        <div className="bg-emerald-500/25 flex-1" />
                       </div>
-                    ))}
 
-                    {/* 零點線 */}
-                    <div
-                      className="absolute bg-text-dim/25"
-                      style={{ left: `${zeroAxisPct}%`, top: '10px', width: '1px', height: '12px', transform: 'translateX(-50%)' }}
-                    />
+                      {/* 歷史事件刻度線 + 上方標籤 (絕對百分比精確定位: 2024/08=2.5%, 2021/05=12.5%, 2020/03=22.5%) */}
+                      {[
+                        { pct: event2024Pct, label: '2024/08', sub: '日圓平倉 (-4.8萬)', color: 'text-rose-400', lineColor: 'bg-rose-400/80' },
+                        { pct: event2021Pct, label: '2021/05', sub: '三級警戒 (-4.0萬)', color: 'text-orange-400', lineColor: 'bg-orange-400/80' },
+                        { pct: event2020Pct, label: '2020/03', sub: '新冠股災 (-3.2萬)', color: 'text-amber-400', lineColor: 'bg-amber-400/80' },
+                      ].map((e) => (
+                        <div key={e.label} className="absolute" style={{ left: `${e.pct}%`, top: 0 }}>
+                          <div className={`absolute w-0.5 ${e.lineColor}`} style={{ left: 0, top: '18px', height: '10px', transform: 'translateX(-50%)' }} />
+                          <div className="absolute" style={{ top: '0px', left: '50%', transform: 'translateX(-50%)', whiteSpace: 'nowrap' }}>
+                            <span className={`text-[8px] font-mono font-bold ${e.color} block text-center leading-none`}>{e.label}</span>
+                            <span className={`text-[7px] font-mono ${e.color} block text-center opacity-85 leading-tight`}>{e.sub}</span>
+                          </div>
+                        </div>
+                      ))}
 
-                    {/* 警戒線（-1.5萬） */}
-                    <div
-                      className="absolute bg-yellow-500/40"
-                      style={{ left: `${cautionAxisPct}%`, top: '10px', width: '1px', height: '12px', transform: 'translateX(-50%)' }}
-                    />
+                      {/* 零點線 (0 萬口 中性界線 = 62.5%) */}
+                      <div
+                        className="absolute bg-emerald-400/60 z-0"
+                        style={{ left: `${zeroAxisPct}%`, top: '16px', width: '2px', height: '14px', transform: 'translateX(-50%)' }}
+                      />
 
-                    {/* 當前位置指針（大圓點 + 發光） */}
-                    <div
-                      className="absolute transition-all duration-1000"
-                      style={{ left: `${Math.min(98, Math.max(2, axisPct))}%`, top: '8px', transform: 'translateX(-50%)' }}
-                    >
-                      <div className={`w-5 h-5 rounded-full border-2 border-card-bg shadow-lg ${signalMap.barColor} ${signal === 'danger' ? 'animate-pulse' : ''}`} />
-                    </div>
+                      {/* 安全區界線 (-1.5萬 = 43.75%) */}
+                      <div
+                        className="absolute bg-emerald-400/40 z-0"
+                        style={{ left: `${cautionAxisPct}%`, top: '16px', width: '1.5px', height: '14px', transform: 'translateX(-50%)' }}
+                      />
 
-                    {/* 軸線數值標籤（下方） */}
-                    <div className="absolute left-0 right-0" style={{ top: '28px' }}>
-                      {/* 零點標籤 */}
-                      <span className="absolute text-[8px] text-text-dim/35 font-mono" style={{ left: `${zeroAxisPct}%`, transform: 'translateX(-50%)' }}>
-                        0
-                      </span>
-                      {/* 警戒線標籤 */}
-                      <span className="absolute text-[8px] text-yellow-400/50 font-mono" style={{ left: `${cautionAxisPct}%`, transform: 'translateX(-50%)' }}>
-                        -1.5萬
-                      </span>
-                      {/* 危險線標籤 */}
-                      <span className="absolute text-[8px] text-rose-400/50 font-mono" style={{ left: `${dangerAxisPct}%`, transform: 'translateX(-50%)' }}>
-                        -3萬
-                      </span>
-                      {/* 當前值標籤（跟隨指針） */}
-                      <span
-                        className={`absolute text-[9px] font-bold font-mono ${signalMap.alertText} transition-all duration-1000`}
-                        style={{ left: `${Math.min(92, Math.max(8, axisPct))}%`, transform: 'translateX(-50%)', top: '14px' }}
+                      {/* 警戒區界線 (-3.0萬 = 25.0%) */}
+                      <div
+                        className="absolute bg-yellow-400/50 z-0"
+                        style={{ left: `${dangerAxisPct}%`, top: '16px', width: '1.5px', height: '14px', transform: 'translateX(-50%)' }}
+                      />
+
+                      {/* 當前位置指針（紅/綠/黃動態圓點） */}
+                      <div
+                        className="absolute transition-all duration-1000 z-10"
+                        style={{ left: `${axisPct}%`, top: '13px', transform: 'translateX(-50%)' }}
                       >
-                        ▲ {(netOI / 10000).toFixed(1)}萬
-                      </span>
+                        <div className={`w-5 h-5 rounded-full border-2 border-slate-900 shadow-xl ${signalMap.barColor} ${signal === 'danger' ? 'animate-pulse ring-2 ring-rose-500/40' : ''}`} />
+                      </div>
+
+                      {/* 軸線數值標籤（下方） */}
+                      <div className="absolute left-0 right-0" style={{ top: '32px' }}>
+                        {/* 0 萬口 中性界線 */}
+                        <span className="absolute text-[8px] text-emerald-400/70 font-mono font-semibold" style={{ left: `${zeroAxisPct}%`, transform: 'translateX(-50%)' }}>
+                          0萬 (中性界線)
+                        </span>
+                        {/* -1.5 萬口 安全區界線 */}
+                        <span className="absolute text-[8px] text-emerald-400/60 font-mono" style={{ left: `${cautionAxisPct}%`, transform: 'translateX(-50%)' }}>
+                          -1.5萬 (安全)
+                        </span>
+                        {/* -3.0 萬口 警戒區界線 */}
+                        <span className="absolute text-[8px] text-yellow-400/80 font-mono" style={{ left: `${dangerAxisPct}%`, transform: 'translateX(-50%)' }}>
+                          -3.0萬 (警戒)
+                        </span>
+                        {/* 當前值標籤（跟隨指針，搭配邊界文字對齊防護） */}
+                        <span
+                          className={`absolute text-[9px] font-bold font-mono ${signalMap.alertText} transition-all duration-1000 whitespace-nowrap`}
+                          style={{
+                            left: `${axisPct}%`,
+                            transform: axisPct < 10 ? 'translateX(0%)' : axisPct > 90 ? 'translateX(-100%)' : 'translateX(-50%)',
+                            top: '18px'
+                          }}
+                        >
+                          ▲ {(netOI / 10000).toFixed(1)}萬口 (換算部位)
+                        </span>
+                      </div>
                     </div>
                   </div>
                 </div>

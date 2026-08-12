@@ -23,6 +23,8 @@ interface EarningsData {
     lastEpsEstimate: number | null;
     epsBeatMiss: number | null;
     epsBeatMissPct: number | null;
+    quarterFCF: number | null;        // 單季自由現金流量（美元）
+    quarterFCFLabel: string | null;   // 季度標籤（如 '2Q2026'）
   };
 }
 
@@ -81,13 +83,14 @@ export default function EarningsTracker({ onSelectStock }: { onSelectStock?: (sy
 
   const getFallbackFor = (symbol: string): EarningsData => {
     const fallbacks: Record<string, any> = {
-      'AAPL': { name: 'Apple Inc.', margin: 0.26, growth: 0.05 },
-      'MSFT': { name: 'Microsoft Corp.', margin: 0.35, growth: 0.18 },
-      'GOOGL': { name: 'Alphabet Inc.', margin: 0.24, growth: 0.14 },
-      'AMZN': { name: 'Amazon.com Inc.', margin: 0.06, growth: 0.12 },
-      'META': { name: 'Meta Platforms', margin: 0.29, growth: 0.27 },
-      'TSLA': { name: 'Tesla, Inc.', margin: 0.15, growth: 0.09 },
-      'NVDA': { name: 'NVIDIA Corp.', margin: 0.49, growth: 2.65 },
+      // quarterFCF 單位：美元（單季），參考 2025 年各季實際值
+      'AAPL':  { name: 'Apple Inc.',       margin: 0.26, growth: 0.05, quarterFCF: 29_000_000_000, quarterFCFLabel: '2Q2026' }, // ~$29B/季
+      'MSFT':  { name: 'Microsoft Corp.',  margin: 0.35, growth: 0.18, quarterFCF: 21_000_000_000, quarterFCFLabel: '3Q2025' }, // ~$21B/季
+      'GOOGL': { name: 'Alphabet Inc.',    margin: 0.24, growth: 0.14, quarterFCF: 18_000_000_000, quarterFCFLabel: '2Q2025' }, // ~$18B/季
+      'AMZN':  { name: 'Amazon.com Inc.',  margin: 0.06, growth: 0.12, quarterFCF: 21_000_000_000, quarterFCFLabel: '2Q2025' }, // ~$21B/季
+      'META':  { name: 'Meta Platforms',   margin: 0.29, growth: 0.27, quarterFCF: 13_000_000_000, quarterFCFLabel: '2Q2025' }, // ~$13B/季
+      'TSLA':  { name: 'Tesla, Inc.',      margin: 0.15, growth: 0.09, quarterFCF:    900_000_000, quarterFCFLabel: '2Q2025' }, // ~$0.9B/季
+      'NVDA':  { name: 'NVIDIA Corp.',     margin: 0.49, growth: 2.65, quarterFCF: 18_000_000_000, quarterFCFLabel: '1Q2026' }, // ~$18B/季
     };
     
     const f = fallbacks[symbol] || { name: symbol, margin: 0.1, growth: 0.05 };
@@ -110,6 +113,8 @@ export default function EarningsTracker({ onSelectStock }: { onSelectStock?: (sy
         lastEpsEstimate: 1.5,
         epsBeatMiss: 0.1,
         epsBeatMissPct: 6.7,
+        quarterFCF: f.quarterFCF ?? null,
+        quarterFCFLabel: f.quarterFCFLabel ?? null,
       }
     };
   };
@@ -465,7 +470,7 @@ export default function EarningsTracker({ onSelectStock }: { onSelectStock?: (sy
                       )}
 
                       {/* Other Metrics */}
-                      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 pb-2">
+                      <div className="grid grid-cols-2 lg:grid-cols-5 gap-3 pb-2">
                          <div className="p-3 bg-card-bg/50 border border-border-subtle rounded-xl">
                             <p className="text-[9px] font-medium text-text-dim/60 uppercase tracking-wider mb-1">Profit Margin</p>
                             <p className="text-sm font-bold">{(item.summary?.margin ? (item.summary.margin * 100).toFixed(1) + '%' : 'N/A')}</p>
@@ -477,6 +482,36 @@ export default function EarningsTracker({ onSelectStock }: { onSelectStock?: (sy
                          <div className="p-3 bg-card-bg/50 border border-border-subtle rounded-xl">
                             <p className="text-[9px] font-medium text-text-dim/60 uppercase tracking-wider mb-1">EPS TTM</p>
                             <p className="text-sm font-bold">{(item.summary?.epsTTM ? '$' + item.summary.epsTTM.toFixed(2) : 'N/A')}</p>
+                         </div>
+                         {/* 單季自由現金流量（FCF）卡片 */}
+                         <div className="p-3 bg-card-bg/50 border border-border-subtle rounded-xl">
+                            <p className="text-[9px] font-medium text-text-dim/60 uppercase tracking-wider mb-1">
+                              FCF (Quarter)
+                            </p>
+                            <p className={`text-sm font-bold ${
+                              item.summary?.quarterFCF == null
+                                ? 'text-text-dim'
+                                : item.summary.quarterFCF >= 0
+                                  ? 'text-emerald-400'
+                                  : 'text-rose-400'
+                            }`}>
+                              {item.summary?.quarterFCF != null
+                                ? (() => {
+                                    const fcf = item.summary.quarterFCF;
+                                    const abs = Math.abs(fcf);
+                                    const sign = fcf < 0 ? '-' : '';
+                                    if (abs >= 1e12) return `${sign}$${(abs / 1e12).toFixed(1)}T`;
+                                    if (abs >= 1e9)  return `${sign}$${(abs / 1e9).toFixed(1)}B`;
+                                    if (abs >= 1e6)  return `${sign}$${(abs / 1e6).toFixed(1)}M`;
+                                    return `${sign}$${abs.toLocaleString()}`;
+                                  })()
+                                : 'N/A'}
+                            </p>
+                            {item.summary?.quarterFCFLabel && (
+                              <p className="text-[9px] text-text-dim/50 mt-0.5 font-mono">
+                                {item.summary.quarterFCFLabel} · 單季
+                              </p>
+                            )}
                          </div>
                          <div className="p-3 bg-card-bg/50 border border-border-subtle rounded-xl">
                             <p className="text-[9px] font-medium text-text-dim/60 uppercase tracking-wider mb-1">Ex-Div Date</p>

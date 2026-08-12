@@ -3,7 +3,7 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 const FRED_API_KEY = process.env.FRED_API_KEY ? process.env.FRED_API_KEY.trim().replace(/^['"]|['"]$/g, '') : undefined;
 const FRED_BASE_URL = 'https://api.stlouisfed.org/fred/series/observations';
 
-async function fetchWithTimeout(url: string, timeoutMs = 8000) {
+async function fetchWithTimeout(url: string, timeoutMs = 15000) {
   let timeoutId: any = null;
   let signal: AbortSignal | undefined = undefined;
 
@@ -265,10 +265,10 @@ async function fetchFredHistory(
 
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
-      const res = await fetchWithTimeout(url, 6000);
+      const res = await fetchWithTimeout(url, 15000);
       if (res.status === 429) {
         console.warn(`[yields] Rate limited for history ${seriesId}, attempt ${attempt + 1}/${retries + 1}`);
-        const delayMs = Math.pow(2, attempt) * 1000 + Math.random() * 500;
+        const delayMs = Math.pow(2, attempt) * 1200 + Math.random() * 500;
         await new Promise(resolve => setTimeout(resolve, delayMs));
         continue;
       }
@@ -279,10 +279,11 @@ async function fetchFredHistory(
         .map((o: any) => ({ value: Number(o.value), date: o.date }));
       
       return monthly;
-    } catch (e) {
-      console.error(`[yields] History fetch failed for ${seriesId} on try ${attempt + 1}:`, e);
+    } catch (e: any) {
+      const isTimeout = e?.name === 'AbortError';
+      console.warn(`[yields] History fetch for ${seriesId} try ${attempt + 1} failed:`, isTimeout ? 'timeout' : e?.message?.slice(0, 100));
       if (attempt < retries) {
-        const delayMs = Math.pow(2, attempt) * 1000 + Math.random() * 500;
+        const delayMs = Math.pow(2, attempt) * 1200 + Math.random() * 500;
         await new Promise(resolve => setTimeout(resolve, delayMs));
         continue;
       }
@@ -375,13 +376,13 @@ async function fetchFredSeries(seriesId: string, retries = 2): Promise<{ value: 
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
       const url = `${FRED_BASE_URL}?series_id=${seriesId}&api_key=${FRED_API_KEY}&file_type=json&sort_order=desc&limit=10`;
-      const res = await fetchWithTimeout(url, 10000); // 10s per request for higher reliability
+      const res = await fetchWithTimeout(url, 15000); // 15s per request for higher reliability
       
       if (res.status === 429) {
         // Rate limit: backoff and retry
         console.warn(`[yields] Rate limited for ${seriesId}, attempt ${attempt + 1}`);
         if (attempt < retries) {
-          await new Promise(r => setTimeout(r, 1000 * (attempt + 1))); // 1s, 2s delay
+          await new Promise(r => setTimeout(r, 1200 * (attempt + 1))); // 1.2s, 2.4s delay
           continue;
         }
         return null;
@@ -395,10 +396,11 @@ async function fetchFredSeries(seriesId: string, retries = 2): Promise<{ value: 
         .map((o: any) => ({ value: Number(o.value), date: o.date }));
       
       return valid.length > 0 ? valid[0] : null;
-    } catch (e) {
-      console.error(`[yields] Fetch failed for ${seriesId} (attempt ${attempt + 1}):`, e);
+    } catch (e: any) {
+      const isTimeout = e?.name === 'AbortError';
+      console.warn(`[yields] Fetch for ${seriesId} try ${attempt + 1} failed:`, isTimeout ? 'timeout' : e?.message?.slice(0, 100));
       if (attempt < retries) {
-        await new Promise(r => setTimeout(r, 500 * (attempt + 1))); // 0.5s, 1s delay
+        await new Promise(r => setTimeout(r, 800 * (attempt + 1))); // 0.8s, 1.6s delay
         continue;
       }
       return null;

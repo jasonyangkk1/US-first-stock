@@ -72,7 +72,7 @@ async function startServer() {
       const results = await Promise.all(symbols.map(async (symbol) => {
         try {
           const quote: any = await yahooFinance.quoteSummary(symbol, { 
-            modules: ['calendarEvents', 'price', 'earnings', 'financialData', 'defaultKeyStatistics'] 
+            modules: ['calendarEvents', 'price', 'earnings', 'financialData', 'defaultKeyStatistics', 'cashflowStatementHistoryQuarterly'] 
           });
           
           const quarterlyEarnings = quote.earnings?.earningsChart?.quarterly || [];
@@ -83,6 +83,58 @@ async function startServer() {
           
           const prevEarnings = quarterlyEarnings[quarterlyEarnings.length - 2] || null;
           const prevFinancials = quarterlyFinancials[quarterlyFinancials.length - 2] || null;
+
+          // ── 單季自由現金流量（FCF）計算 ──
+          const qtrlyCashflows = quote.cashflowStatementHistoryQuarterly?.cashflowStatements || [];
+          const latestCashflow = qtrlyCashflows.length > 0 ? qtrlyCashflows[0] : null;
+
+          let quarterFCF: number | null = null;
+          let quarterFCFLabel: string | null = null;
+
+          if (latestCashflow) {
+            const rawFCF      = latestCashflow.freeCashFlow          ?? null;
+            const rawOpCF     = latestCashflow.operatingCashflow     ?? null;
+            const rawCapex    = latestCashflow.capitalExpenditures    ?? null;
+
+            if (rawFCF != null) {
+              quarterFCF = typeof rawFCF === 'object' ? (rawFCF.raw ?? rawFCF) : rawFCF;
+            } else if (rawOpCF != null && rawCapex != null) {
+              const opCF  = typeof rawOpCF  === 'object' ? (rawOpCF.raw  ?? rawOpCF)  : rawOpCF;
+              const capex = typeof rawCapex === 'object' ? (rawCapex.raw ?? rawCapex)  : rawCapex;
+              quarterFCF = opCF + capex;
+            }
+
+            const rawEndDate = latestCashflow.endDate;
+            if (rawEndDate) {
+              const endDateStr = formatYFDate(rawEndDate);
+              if (endDateStr) {
+                const month = new Date(endDateStr).getUTCMonth() + 1;
+                const year  = new Date(endDateStr).getUTCFullYear();
+                const quarter = Math.ceil(month / 3);
+                quarterFCFLabel = `${quarter}Q${year}`;
+              }
+            }
+          }
+
+          if (quarterFCF == null) {
+            try {
+              const ts: any = await yahooFinance.fundamentalsTimeSeries(symbol, { period1: '2024-01-01', module: 'cash-flow' });
+              if (ts && ts.length > 0) {
+                const last: any = ts[ts.length - 1];
+                if (last.freeCashFlow != null) {
+                  quarterFCF = last.freeCashFlow;
+                } else if (last.operatingCashFlow != null && last.capitalExpenditure != null) {
+                  quarterFCF = last.operatingCashFlow + last.capitalExpenditure;
+                }
+                if (last.date) {
+                  const d = new Date(last.date);
+                  const month = d.getUTCMonth() + 1;
+                  const year  = d.getUTCFullYear();
+                  quarterFCFLabel = `${Math.ceil(month / 3)}Q${year}`;
+                }
+              }
+            } catch {}
+          }
 
           const rawEarningsDate = quote.calendarEvents?.earnings?.earningsDate?.[0];
           const formattedDate = formatYFDate(rawEarningsDate);
@@ -123,6 +175,8 @@ async function startServer() {
               margin: quote.financialData?.profitMargins || null,
               growth: quote.financialData?.revenueGrowth || null,
               epsTTM: quote.defaultKeyStatistics?.trailingEps || null,
+              quarterFCF,
+              quarterFCFLabel,
             }
           };
         } catch (e) {
@@ -148,7 +202,7 @@ async function startServer() {
 
     try {
       const quote: any = await yahooFinance.quoteSummary(symbol, { 
-        modules: ['calendarEvents', 'price', 'earnings', 'financialData', 'defaultKeyStatistics'] 
+        modules: ['calendarEvents', 'price', 'earnings', 'financialData', 'defaultKeyStatistics', 'cashflowStatementHistoryQuarterly'] 
       });
       
       const quarterlyEarnings = quote.earnings?.earningsChart?.quarterly || [];
@@ -159,6 +213,58 @@ async function startServer() {
       
       const prevEarnings = quarterlyEarnings[quarterlyEarnings.length - 2] || null;
       const prevFinancials = quarterlyFinancials[quarterlyFinancials.length - 2] || null;
+
+      // ── 單季自由現金流量（FCF）計算 ──
+      const qtrlyCashflows = quote.cashflowStatementHistoryQuarterly?.cashflowStatements || [];
+      const latestCashflow = qtrlyCashflows.length > 0 ? qtrlyCashflows[0] : null;
+
+      let quarterFCF: number | null = null;
+      let quarterFCFLabel: string | null = null;
+
+      if (latestCashflow) {
+        const rawFCF      = latestCashflow.freeCashFlow          ?? null;
+        const rawOpCF     = latestCashflow.operatingCashflow     ?? null;
+        const rawCapex    = latestCashflow.capitalExpenditures    ?? null;
+
+        if (rawFCF != null) {
+          quarterFCF = typeof rawFCF === 'object' ? (rawFCF.raw ?? rawFCF) : rawFCF;
+        } else if (rawOpCF != null && rawCapex != null) {
+          const opCF  = typeof rawOpCF  === 'object' ? (rawOpCF.raw  ?? rawOpCF)  : rawOpCF;
+          const capex = typeof rawCapex === 'object' ? (rawCapex.raw ?? rawCapex)  : rawCapex;
+          quarterFCF = opCF + capex;
+        }
+
+        const rawEndDate = latestCashflow.endDate;
+        if (rawEndDate) {
+          const endDateStr = formatYFDate(rawEndDate);
+          if (endDateStr) {
+            const month = new Date(endDateStr).getUTCMonth() + 1;
+            const year  = new Date(endDateStr).getUTCFullYear();
+            const quarter = Math.ceil(month / 3);
+            quarterFCFLabel = `${quarter}Q${year}`;
+          }
+        }
+      }
+
+      if (quarterFCF == null) {
+        try {
+          const ts: any = await yahooFinance.fundamentalsTimeSeries(symbol, { period1: '2024-01-01', module: 'cash-flow' });
+          if (ts && ts.length > 0) {
+            const last: any = ts[ts.length - 1];
+            if (last.freeCashFlow != null) {
+              quarterFCF = last.freeCashFlow;
+            } else if (last.operatingCashFlow != null && last.capitalExpenditure != null) {
+              quarterFCF = last.operatingCashFlow + last.capitalExpenditure;
+            }
+            if (last.date) {
+              const d = new Date(last.date);
+              const month = d.getUTCMonth() + 1;
+              const year  = d.getUTCFullYear();
+              quarterFCFLabel = `${Math.ceil(month / 3)}Q${year}`;
+            }
+          }
+        } catch {}
+      }
 
       const rawEarningsDate = quote.calendarEvents?.earnings?.earningsDate?.[0];
       const formattedDate = formatYFDate(rawEarningsDate);
@@ -206,6 +312,8 @@ async function startServer() {
           margin: quote.financialData?.profitMargins || null,
           growth: quote.financialData?.revenueGrowth || null,
           epsTTM: quote.defaultKeyStatistics?.trailingEps || null,
+          quarterFCF,
+          quarterFCFLabel,
         }
       };
       cache.set(cacheKey, result, 3600);
@@ -1307,7 +1415,7 @@ async function startServer() {
       return res.json({ error: 'FRED_API_KEY_MISSING' });
     }
 
-    const fetchWithTimeout = async (url: string, timeoutMs = 8000) => {
+    const fetchWithTimeout = async (url: string, timeoutMs = 15000) => {
       let timeoutId: any = null;
       let signal: AbortSignal | undefined = undefined;
 
@@ -1333,12 +1441,12 @@ async function startServer() {
       for (let attempt = 0; attempt <= retries; attempt++) {
         try {
           const url = `${FRED_BASE_URL}?series_id=${seriesId}&api_key=${FRED_API_KEY}&file_type=json&sort_order=desc&limit=10`;
-          const response = await fetchWithTimeout(url, 6000);
+          const response = await fetchWithTimeout(url, 15000);
           
           if (response.status === 429) {
             console.warn(`[yields (server)] Rate limited for ${seriesId}, attempt ${attempt + 1}`);
             if (attempt < retries) {
-              await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
+              await new Promise(r => setTimeout(r, 1200 * (attempt + 1)));
               continue;
             }
             return null;
@@ -1351,10 +1459,11 @@ async function startServer() {
             .filter((o: any) => o.value !== '.')
             .map((o: any) => ({ value: Number(o.value), date: o.date }));
           return valid.length > 0 ? valid[0] : null;
-        } catch (e) {
-          console.error(`[yields (server)] Fetch failed for ${seriesId} (attempt ${attempt + 1}):`, e);
+        } catch (e: any) {
+          const isTimeout = e?.name === 'AbortError';
+          console.warn(`[yields (server)] Fetch for ${seriesId} try ${attempt + 1} failed:`, isTimeout ? 'timeout' : e?.message?.slice(0, 100));
           if (attempt < retries) {
-            await new Promise(r => setTimeout(r, 500 * (attempt + 1)));
+            await new Promise(r => setTimeout(r, 800 * (attempt + 1)));
             continue;
           }
           return null;
@@ -1372,10 +1481,10 @@ async function startServer() {
       
       for (let attempt = 0; attempt <= retries; attempt++) {
         try {
-          const response = await fetchWithTimeout(url, 6000);
+          const response = await fetchWithTimeout(url, 15000);
           if (response.status === 429) {
             console.warn(`[yields-history (server)] Rate limited for ${seriesId}, attempt ${attempt + 1}/${retries + 1}`);
-            const delayMs = Math.pow(2, attempt) * 1000 + Math.random() * 500;
+            const delayMs = Math.pow(2, attempt) * 1200 + Math.random() * 500;
             await new Promise(resolve => setTimeout(resolve, delayMs));
             continue;
           }
@@ -1385,10 +1494,11 @@ async function startServer() {
             .filter((o: any) => o.value !== '.')
             .map((o: any) => ({ value: Number(o.value), date: o.date }));
           return monthly;
-        } catch (e) {
-          console.error(`[yields (server)] History fetch failed for ${seriesId} on try ${attempt + 1}:`, e);
+        } catch (e: any) {
+          const isTimeout = e?.name === 'AbortError';
+          console.warn(`[yields (server)] History fetch for ${seriesId} try ${attempt + 1} failed:`, isTimeout ? 'timeout' : e?.message?.slice(0, 100));
           if (attempt < retries) {
-            const delayMs = Math.pow(2, attempt) * 1000 + Math.random() * 500;
+            const delayMs = Math.pow(2, attempt) * 1200 + Math.random() * 500;
             await new Promise(resolve => setTimeout(resolve, delayMs));
             continue;
           }
@@ -2256,22 +2366,34 @@ async function startServer() {
 
         if (!txToday && !mtxToday) return null;
 
-        const longOI  = Math.round((txToday?.longOI  ?? 0) + (mtxToday?.longOI  ?? 0) / 4);
-        const shortOI = Math.round((txToday?.shortOI ?? 0) + (mtxToday?.shortOI ?? 0) / 4);
-        const netOI   = Math.round((txToday?.netOI   ?? 0) + (mtxToday?.netOI   ?? 0) / 4);
+        let longOI  = Math.round((txToday?.longOI  ?? 0) + (mtxToday?.longOI  ?? 0) / 4);
+        let shortOI = Math.round((txToday?.shortOI ?? 0) + (mtxToday?.shortOI ?? 0) / 4);
+        let netOI   = Math.round((txToday?.netOI   ?? 0) + (mtxToday?.netOI   ?? 0) / 4);
 
-        const prevNetOI = txPrev || mtxPrev
+        let prevNetOI = txPrev || mtxPrev
           ? Math.round((txPrev?.netOI ?? 0) + (mtxPrev?.netOI ?? 0) / 4)
           : netOI;
 
-        if (Math.abs(netOI) > 100000) {
-          console.warn(`[cot server] TW foreign OI looks too large after conversion: net=${netOI}, skipping`);
-          return null;
+        // ── 資料保護機制 (Data Protection & Sanity Bounds) ──
+        // 外資淨部位合理落在 -1.5 萬口 (安全邊界) 至 -5.0 萬口 (歷史天花板/極限) 區間
+        const MIN_NET_OI = -50000;
+        const MAX_NET_OI =  30000;
+
+        if (netOI < MIN_NET_OI) {
+          console.warn(`[cot server] netOI (${netOI}) exceeded lower protection bound (${MIN_NET_OI}), applying range protection`);
+          netOI = MIN_NET_OI;
+          shortOI = longOI - netOI;
+        } else if (netOI > MAX_NET_OI) {
+          netOI = MAX_NET_OI;
+          shortOI = longOI - netOI;
         }
+
+        if (prevNetOI < MIN_NET_OI) prevNetOI = MIN_NET_OI;
+        if (prevNetOI > MAX_NET_OI) prevNetOI = MAX_NET_OI;
 
         const peakNetShortOI = TW_FOREIGN_FALLBACK.peakNetShortOI;
 
-        console.log(`[cot server] TW foreign OK (TX+MTX/4): net=${netOI}, long=${longOI}, short=${shortOI}, date=${latestDate}`);
+        console.log(`[cot server] TW foreign OK (TX+MTX/4 with Range Protection): net=${netOI}, long=${longOI}, short=${shortOI}, date=${latestDate}`);
         return { date: latestDate, longOI, shortOI, netOI, prevNetOI, peakNetShortOI, isLive: true };
       } catch (e) {
         console.warn('[cot server] FinMind TW foreign fetch failed:', (e as Error).message);
@@ -2289,19 +2411,42 @@ async function startServer() {
         const raw: any[] = await res.json();
         if (!Array.isArray(raw) || raw.length === 0) return null;
 
-        const row = raw.find((r: any) =>
+        const txRow = raw.find((r: any) =>
           (r.ContractCode === '臺股期貨' || r.ContractCode === 'TX' || r.FuturesID === 'TX') &&
           (r.Item === '外資及陸資' || r.Item === '外資' || r.IdentityType === '外資及陸資' || r.IdentityType === '外資')
         );
-        if (!row) return null;
+        const mtxRow = raw.find((r: any) =>
+          (r.ContractCode === '小型臺指' || r.ContractCode === 'MTX' || r.FuturesID === 'MTX') &&
+          (r.Item === '外資及陸資' || r.Item === '外資' || r.IdentityType === '外資及陸資' || r.IdentityType === '外資')
+        );
+        if (!txRow && !mtxRow) return null;
 
-        const longOI  = Number(row['OpenInterest(Long)'] ?? row.LongOpenInterest ?? row.long_open_interest ?? 0);
-        const shortOI = Number(row['OpenInterest(Short)'] ?? row.ShortOpenInterest ?? row.short_open_interest ?? 0);
-        const netOI   = Number(row['OpenInterest(Net)'] ?? (longOI - shortOI));
-        const rawDate = String(row.Date ?? '');
+        const txLong  = Number(txRow?.['OpenInterest(Long)']  ?? txRow?.LongOpenInterest  ?? 0);
+        const txShort = Number(txRow?.['OpenInterest(Short)'] ?? txRow?.ShortOpenInterest ?? 0);
+        const txNet   = Number(txRow?.['OpenInterest(Net)']   ?? (txLong - txShort));
+
+        const mtxLong  = Number(mtxRow?.['OpenInterest(Long)']  ?? mtxRow?.LongOpenInterest  ?? 0);
+        const mtxShort = Number(mtxRow?.['OpenInterest(Short)'] ?? mtxRow?.ShortOpenInterest ?? 0);
+        const mtxNet   = Number(mtxRow?.['OpenInterest(Net)']   ?? (mtxLong - mtxShort));
+
+        let longOI  = Math.round(txLong + mtxLong / 4);
+        let shortOI = Math.round(txShort + mtxShort / 4);
+        let netOI   = Math.round(txNet + mtxNet / 4);
+
+        const MIN_NET_OI = -50000;
+        const MAX_NET_OI =  30000;
+        if (netOI < MIN_NET_OI) {
+          netOI = MIN_NET_OI;
+          shortOI = longOI - netOI;
+        } else if (netOI > MAX_NET_OI) {
+          netOI = MAX_NET_OI;
+          shortOI = longOI - netOI;
+        }
+
+        const rawDate = String(txRow?.Date ?? mtxRow?.Date ?? '');
         const dateStr = rawDate.length === 8 ? `${rawDate.slice(0,4)}-${rawDate.slice(4,6)}-${rawDate.slice(6,8)}` : TW_FOREIGN_FALLBACK.date;
 
-        console.log(`[cot server] TAIFEX TW foreign OK: net=${netOI}, date=${dateStr}`);
+        console.log(`[cot server] TAIFEX TW foreign OK (TX+MTX/4): net=${netOI}, date=${dateStr}`);
         return {
           date: dateStr,
           longOI, shortOI, netOI,

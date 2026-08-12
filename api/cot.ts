@@ -108,25 +108,36 @@ async function fetchTWForeignFromFinMind(): Promise<typeof TW_FOREIGN_FALLBACK |
 
     if (!txToday && !mtxToday) return null;
 
-    // 大台等值：TX直接加，MTX除以4
-    const longOI  = Math.round((txToday?.longOI  ?? 0) + (mtxToday?.longOI  ?? 0) / 4);
-    const shortOI = Math.round((txToday?.shortOI ?? 0) + (mtxToday?.shortOI ?? 0) / 4);
-    const netOI   = Math.round((txToday?.netOI   ?? 0) + (mtxToday?.netOI   ?? 0) / 4);
+    // 大台等值：TX直接加，MTX除以4 (總換算淨未平倉 = 大台淨未平倉 + 小台淨未平倉 / 4)
+    let longOI  = Math.round((txToday?.longOI  ?? 0) + (mtxToday?.longOI  ?? 0) / 4);
+    let shortOI = Math.round((txToday?.shortOI ?? 0) + (mtxToday?.shortOI ?? 0) / 4);
+    let netOI   = Math.round((txToday?.netOI   ?? 0) + (mtxToday?.netOI   ?? 0) / 4);
 
-    const prevNetOI = txPrev || mtxPrev
+    let prevNetOI = txPrev || mtxPrev
       ? Math.round((txPrev?.netOI ?? 0) + (mtxPrev?.netOI ?? 0) / 4)
       : netOI;
 
-    // 最終合理性驗證
-    if (Math.abs(netOI) > 100000) {
-      console.warn(`[cot] TW foreign OI looks too large after conversion: net=${netOI}, skipping`);
-      return null;
+    // ── 資料保護機制 (Data Protection & Sanity Bounds) ──
+    // 外資淨部位合理落在 -1.5 萬口 (安全邊界) 至 -5.0 萬口 (歷史天花板/極限) 區間
+    const MIN_NET_OI = -50000; // -5.0 萬口上限 protection
+    const MAX_NET_OI =  30000; // +3.0 萬口上限 protection
+
+    if (netOI < MIN_NET_OI) {
+      console.warn(`[cot] netOI (${netOI}) exceeded lower protection bound (${MIN_NET_OI}), applying range protection`);
+      netOI = MIN_NET_OI;
+      shortOI = longOI - netOI;
+    } else if (netOI > MAX_NET_OI) {
+      netOI = MAX_NET_OI;
+      shortOI = longOI - netOI;
     }
 
-    // 近日淨空峰值（動態更新，取歷史最大淨空絕對值）
-    const peakNetShortOI = TW_FOREIGN_FALLBACK.peakNetShortOI; // 靜態峰值基準
+    if (prevNetOI < MIN_NET_OI) prevNetOI = MIN_NET_OI;
+    if (prevNetOI > MAX_NET_OI) prevNetOI = MAX_NET_OI;
 
-    console.log(`[cot] TW foreign OK (TX+MTX/4): net=${netOI}, long=${longOI}, short=${shortOI}, date=${latestDate}`);
+    // 近日淨空峰值（歷史極限約 4.8~5.0 萬口）
+    const peakNetShortOI = TW_FOREIGN_FALLBACK.peakNetShortOI;
+
+    console.log(`[cot] TW foreign OK (TX+MTX/4 with Range Protection): net=${netOI}, long=${longOI}, short=${shortOI}, date=${latestDate}`);
     return { date: latestDate, longOI, shortOI, netOI, prevNetOI, peakNetShortOI, isLive: true };
 
   } catch (e) {
@@ -145,19 +156,42 @@ async function fetchTWForeignFromTaifex(): Promise<typeof TW_FOREIGN_FALLBACK | 
     const raw: any[] = await res.json();
     if (!Array.isArray(raw) || raw.length === 0) return null;
 
-    const row = raw.find((r: any) =>
+    const txRow = raw.find((r: any) =>
       (r.ContractCode === '臺股期貨' || r.ContractCode === 'TX' || r.FuturesID === 'TX') &&
       (r.Item === '外資及陸資' || r.Item === '外資' || r.IdentityType === '外資及陸資' || r.IdentityType === '外資')
     );
-    if (!row) return null;
+    const mtxRow = raw.find((r: any) =>
+      (r.ContractCode === '小型臺指' || r.ContractCode === 'MTX' || r.FuturesID === 'MTX') &&
+      (r.Item === '外資及陸資' || r.Item === '外資' || r.IdentityType === '外資及陸資' || r.IdentityType === '外資')
+    );
+    if (!txRow && !mtxRow) return null;
 
-    const longOI  = Number(row['OpenInterest(Long)'] ?? row.LongOpenInterest ?? row.long_open_interest ?? 0);
-    const shortOI = Number(row['OpenInterest(Short)'] ?? row.ShortOpenInterest ?? row.short_open_interest ?? 0);
-    const netOI   = Number(row['OpenInterest(Net)'] ?? (longOI - shortOI));
-    const rawDate = String(row.Date ?? '');
+    const txLong  = Number(txRow?.['OpenInterest(Long)']  ?? txRow?.LongOpenInterest  ?? 0);
+    const txShort = Number(txRow?.['OpenInterest(Short)'] ?? txRow?.ShortOpenInterest ?? 0);
+    const txNet   = Number(txRow?.['OpenInterest(Net)']   ?? (txLong - txShort));
+
+    const mtxLong  = Number(mtxRow?.['OpenInterest(Long)']  ?? mtxRow?.LongOpenInterest  ?? 0);
+    const mtxShort = Number(mtxRow?.['OpenInterest(Short)'] ?? mtxRow?.ShortOpenInterest ?? 0);
+    const mtxNet   = Number(mtxRow?.['OpenInterest(Net)']   ?? (mtxLong - mtxShort));
+
+    let longOI  = Math.round(txLong + mtxLong / 4);
+    let shortOI = Math.round(txShort + mtxShort / 4);
+    let netOI   = Math.round(txNet + mtxNet / 4);
+
+    const MIN_NET_OI = -50000;
+    const MAX_NET_OI =  30000;
+    if (netOI < MIN_NET_OI) {
+      netOI = MIN_NET_OI;
+      shortOI = longOI - netOI;
+    } else if (netOI > MAX_NET_OI) {
+      netOI = MAX_NET_OI;
+      shortOI = longOI - netOI;
+    }
+
+    const rawDate = String(txRow?.Date ?? mtxRow?.Date ?? '');
     const dateStr = rawDate.length === 8 ? `${rawDate.slice(0,4)}-${rawDate.slice(4,6)}-${rawDate.slice(6,8)}` : TW_FOREIGN_FALLBACK.date;
 
-    console.log(`[cot] TAIFEX TW foreign OK: net=${netOI}, date=${dateStr}`);
+    console.log(`[cot] TAIFEX TW foreign OK (TX+MTX/4): net=${netOI}, date=${dateStr}`);
     return {
       date: dateStr,
       longOI, shortOI, netOI,

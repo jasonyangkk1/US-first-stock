@@ -214,7 +214,7 @@ function getNextReleaseDates() {
   };
 }
 
-async function fetchWithTimeout(url: string, timeoutMs = 8000) {
+async function fetchWithTimeout(url: string, timeoutMs = 15000) {
   let timeoutId: any = null;
   let signal: AbortSignal | undefined = undefined;
 
@@ -241,10 +241,10 @@ async function fetchFred(seriesId: string, limit = 16, retries = 2) {
   const url = `${FRED_BASE_URL}?series_id=${seriesId}&api_key=${FRED_API_KEY}&file_type=json&sort_order=desc&limit=${limit}`;
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
-      const res = await fetchWithTimeout(url, 10000); // 10s per request for higher reliability
+      const res = await fetchWithTimeout(url, 15000); // 15s per request for higher reliability
       if (res.status === 429) {
         console.warn(`[macro] Rate limited for ${seriesId}, attempt ${attempt + 1}/${retries + 1}`);
-        const delayMs = Math.pow(2, attempt) * 1000 + Math.random() * 500;
+        const delayMs = Math.pow(2, attempt) * 1200 + Math.random() * 500;
         await new Promise(resolve => setTimeout(resolve, delayMs));
         continue;
       }
@@ -253,7 +253,7 @@ async function fetchFred(seriesId: string, limit = 16, retries = 2) {
         try { errorText = await res.text(); } catch {}
         console.warn(`[macro] FRED ${seriesId} HTTP ${res.status}: ${errorText.slice(0, 150)}`);
         if (res.status >= 500) {
-          const delayMs = Math.pow(2, attempt) * 500 + Math.random() * 200;
+          const delayMs = Math.pow(2, attempt) * 800 + Math.random() * 300;
           await new Promise(resolve => setTimeout(resolve, delayMs));
           continue;
         }
@@ -268,7 +268,7 @@ async function fetchFred(seriesId: string, limit = 16, retries = 2) {
       const isTimeout = e?.name === 'AbortError';
       console.warn(`[macro] FRED ${seriesId} try ${attempt + 1} failed:`, isTimeout ? 'timeout' : e?.message?.slice(0, 120));
       if (attempt < retries) {
-        const delayMs = Math.pow(2, attempt) * 1000 + Math.random() * 500;
+        const delayMs = Math.pow(2, attempt) * 1200 + Math.random() * 500;
         await new Promise(resolve => setTimeout(resolve, delayMs));
         continue;
       }
