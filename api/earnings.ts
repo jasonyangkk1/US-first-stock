@@ -41,9 +41,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         // FCF = 營業現金流 + 資本支出（資本支出本身為負值，等效於相減）
         const qtrlyCashflows = quote.cashflowStatementHistoryQuarterly?.cashflowStatements || [];
         const latestCashflow = qtrlyCashflows.length > 0 ? qtrlyCashflows[0] : null; // Yahoo 通常最新在前
+        const prevCashflow   = qtrlyCashflows.length > 1 ? qtrlyCashflows[1] : null; // 前一季
 
         let quarterFCF: number | null = null;
         let quarterFCFLabel: string | null = null;
+        let prevQuarterFCF: number | null = null;
+        let prevQuarterFCFLabel: string | null = null;
 
         if (latestCashflow) {
           // 優先用直接提供的 freeCashFlow，其次用 operatingCashflow + capitalExpenditures 計算
@@ -62,12 +65,36 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           // 從 endDate 推算季度標籤（例：2026-06-28 → 2Q2026）
           const rawEndDate = latestCashflow.endDate;
           if (rawEndDate) {
-            const endDateStr = formatYFDate(rawEndDate); // 轉為 ISO 字串
+            const endDateStr = formatYFDate(rawEndDate);
             if (endDateStr) {
-              const month = new Date(endDateStr).getUTCMonth() + 1; // 1-12
+              const month = new Date(endDateStr).getUTCMonth() + 1;
               const year  = new Date(endDateStr).getUTCFullYear();
-              const quarter = Math.ceil(month / 3);
-              quarterFCFLabel = `${quarter}Q${year}`;
+              quarterFCFLabel = `${Math.ceil(month / 3)}Q${year}`;
+            }
+          }
+        }
+
+        // ── 前一季 FCF（用於 QoQ 對比）──
+        if (prevCashflow) {
+          const rawFCF   = prevCashflow.freeCashFlow       ?? null;
+          const rawOpCF  = prevCashflow.operatingCashflow  ?? null;
+          const rawCapex = prevCashflow.capitalExpenditures ?? null;
+
+          if (rawFCF != null) {
+            prevQuarterFCF = typeof rawFCF === 'object' ? (rawFCF.raw ?? rawFCF) : rawFCF;
+          } else if (rawOpCF != null && rawCapex != null) {
+            const opCF  = typeof rawOpCF  === 'object' ? (rawOpCF.raw  ?? rawOpCF)  : rawOpCF;
+            const capex = typeof rawCapex === 'object' ? (rawCapex.raw ?? rawCapex)  : rawCapex;
+            prevQuarterFCF = opCF + capex;
+          }
+
+          const rawPrevDate = prevCashflow.endDate;
+          if (rawPrevDate) {
+            const prevDateStr = formatYFDate(rawPrevDate);
+            if (prevDateStr) {
+              const month = new Date(prevDateStr).getUTCMonth() + 1;
+              const year  = new Date(prevDateStr).getUTCFullYear();
+              prevQuarterFCFLabel = `${Math.ceil(month / 3)}Q${year}`;
             }
           }
         }
@@ -78,7 +105,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           try {
             const ts: any = await yahooFinance.fundamentalsTimeSeries(symbol, { period1: '2024-01-01', module: 'cash-flow' });
             if (ts && ts.length > 0) {
-              const last: any = ts[ts.length - 1];
+              // ts 為升序，最新在最後
+              const last: any  = ts[ts.length - 1];
+              const prev2: any = ts.length > 1 ? ts[ts.length - 2] : null;
+
               if (last.freeCashFlow != null) {
                 quarterFCF = last.freeCashFlow;
               } else if (last.operatingCashFlow != null && last.capitalExpenditure != null) {
@@ -86,9 +116,20 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               }
               if (last.date) {
                 const d = new Date(last.date);
-                const month = d.getUTCMonth() + 1;
-                const year  = d.getUTCFullYear();
-                quarterFCFLabel = `${Math.ceil(month / 3)}Q${year}`;
+                quarterFCFLabel = `${Math.ceil((d.getUTCMonth() + 1) / 3)}Q${d.getUTCFullYear()}`;
+              }
+
+              // 前一季備援
+              if (prev2 && prevQuarterFCF == null) {
+                if (prev2.freeCashFlow != null) {
+                  prevQuarterFCF = prev2.freeCashFlow;
+                } else if (prev2.operatingCashFlow != null && prev2.capitalExpenditure != null) {
+                  prevQuarterFCF = prev2.operatingCashFlow + prev2.capitalExpenditure;
+                }
+                if (prev2.date) {
+                  const d = new Date(prev2.date);
+                  prevQuarterFCFLabel = `${Math.ceil((d.getUTCMonth() + 1) / 3)}Q${d.getUTCFullYear()}`;
+                }
               }
             }
           } catch {}
@@ -138,6 +179,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             // FCF = 營業現金流 + 資本支出（資本支出為負值）
             quarterFCF,
             quarterFCFLabel,
+            prevQuarterFCF,
+            prevQuarterFCFLabel,
           }
         });
       } catch (e: any) {

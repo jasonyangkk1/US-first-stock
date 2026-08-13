@@ -87,9 +87,12 @@ async function startServer() {
           // ── 單季自由現金流量（FCF）計算 ──
           const qtrlyCashflows = quote.cashflowStatementHistoryQuarterly?.cashflowStatements || [];
           const latestCashflow = qtrlyCashflows.length > 0 ? qtrlyCashflows[0] : null;
+          const prevCashflow   = qtrlyCashflows.length > 1 ? qtrlyCashflows[1] : null;
 
           let quarterFCF: number | null = null;
           let quarterFCFLabel: string | null = null;
+          let prevQuarterFCF: number | null = null;
+          let prevQuarterFCFLabel: string | null = null;
 
           if (latestCashflow) {
             const rawFCF      = latestCashflow.freeCashFlow          ?? null;
@@ -116,11 +119,37 @@ async function startServer() {
             }
           }
 
+          if (prevCashflow) {
+            const rawFCF   = prevCashflow.freeCashFlow       ?? null;
+            const rawOpCF  = prevCashflow.operatingCashflow  ?? null;
+            const rawCapex = prevCashflow.capitalExpenditures ?? null;
+
+            if (rawFCF != null) {
+              prevQuarterFCF = typeof rawFCF === 'object' ? (rawFCF.raw ?? rawFCF) : rawFCF;
+            } else if (rawOpCF != null && rawCapex != null) {
+              const opCF  = typeof rawOpCF  === 'object' ? (rawOpCF.raw  ?? rawOpCF)  : rawOpCF;
+              const capex = typeof rawCapex === 'object' ? (rawCapex.raw ?? rawCapex)  : rawCapex;
+              prevQuarterFCF = opCF + capex;
+            }
+
+            const rawPrevDate = prevCashflow.endDate;
+            if (rawPrevDate) {
+              const prevDateStr = formatYFDate(rawPrevDate);
+              if (prevDateStr) {
+                const month = new Date(prevDateStr).getUTCMonth() + 1;
+                const year  = new Date(prevDateStr).getUTCFullYear();
+                prevQuarterFCFLabel = `${Math.ceil(month / 3)}Q${year}`;
+              }
+            }
+          }
+
           if (quarterFCF == null) {
             try {
               const ts: any = await yahooFinance.fundamentalsTimeSeries(symbol, { period1: '2024-01-01', module: 'cash-flow' });
               if (ts && ts.length > 0) {
-                const last: any = ts[ts.length - 1];
+                const last: any  = ts[ts.length - 1];
+                const prev2: any = ts.length > 1 ? ts[ts.length - 2] : null;
+
                 if (last.freeCashFlow != null) {
                   quarterFCF = last.freeCashFlow;
                 } else if (last.operatingCashFlow != null && last.capitalExpenditure != null) {
@@ -131,6 +160,18 @@ async function startServer() {
                   const month = d.getUTCMonth() + 1;
                   const year  = d.getUTCFullYear();
                   quarterFCFLabel = `${Math.ceil(month / 3)}Q${year}`;
+                }
+
+                if (prev2 && prevQuarterFCF == null) {
+                  if (prev2.freeCashFlow != null) {
+                    prevQuarterFCF = prev2.freeCashFlow;
+                  } else if (prev2.operatingCashFlow != null && prev2.capitalExpenditure != null) {
+                    prevQuarterFCF = prev2.operatingCashFlow + prev2.capitalExpenditure;
+                  }
+                  if (prev2.date) {
+                    const d = new Date(prev2.date);
+                    prevQuarterFCFLabel = `${Math.ceil((d.getUTCMonth() + 1) / 3)}Q${d.getUTCFullYear()}`;
+                  }
                 }
               }
             } catch {}
@@ -177,6 +218,8 @@ async function startServer() {
               epsTTM: quote.defaultKeyStatistics?.trailingEps || null,
               quarterFCF,
               quarterFCFLabel,
+              prevQuarterFCF,
+              prevQuarterFCFLabel,
             }
           };
         } catch (e) {
@@ -217,9 +260,12 @@ async function startServer() {
       // ── 單季自由現金流量（FCF）計算 ──
       const qtrlyCashflows = quote.cashflowStatementHistoryQuarterly?.cashflowStatements || [];
       const latestCashflow = qtrlyCashflows.length > 0 ? qtrlyCashflows[0] : null;
+      const prevCashflow   = qtrlyCashflows.length > 1 ? qtrlyCashflows[1] : null;
 
       let quarterFCF: number | null = null;
       let quarterFCFLabel: string | null = null;
+      let prevQuarterFCF: number | null = null;
+      let prevQuarterFCFLabel: string | null = null;
 
       if (latestCashflow) {
         const rawFCF      = latestCashflow.freeCashFlow          ?? null;
@@ -246,11 +292,37 @@ async function startServer() {
         }
       }
 
+      if (prevCashflow) {
+        const rawFCF   = prevCashflow.freeCashFlow       ?? null;
+        const rawOpCF  = prevCashflow.operatingCashflow  ?? null;
+        const rawCapex = prevCashflow.capitalExpenditures ?? null;
+
+        if (rawFCF != null) {
+          prevQuarterFCF = typeof rawFCF === 'object' ? (rawFCF.raw ?? rawFCF) : rawFCF;
+        } else if (rawOpCF != null && rawCapex != null) {
+          const opCF  = typeof rawOpCF  === 'object' ? (rawOpCF.raw  ?? rawOpCF)  : rawOpCF;
+          const capex = typeof rawCapex === 'object' ? (rawCapex.raw ?? rawCapex)  : rawCapex;
+          prevQuarterFCF = opCF + capex;
+        }
+
+        const rawPrevDate = prevCashflow.endDate;
+        if (rawPrevDate) {
+          const prevDateStr = formatYFDate(rawPrevDate);
+          if (prevDateStr) {
+            const month = new Date(prevDateStr).getUTCMonth() + 1;
+            const year  = new Date(prevDateStr).getUTCFullYear();
+            prevQuarterFCFLabel = `${Math.ceil(month / 3)}Q${year}`;
+          }
+        }
+      }
+
       if (quarterFCF == null) {
         try {
           const ts: any = await yahooFinance.fundamentalsTimeSeries(symbol, { period1: '2024-01-01', module: 'cash-flow' });
           if (ts && ts.length > 0) {
-            const last: any = ts[ts.length - 1];
+            const last: any  = ts[ts.length - 1];
+            const prev2: any = ts.length > 1 ? ts[ts.length - 2] : null;
+
             if (last.freeCashFlow != null) {
               quarterFCF = last.freeCashFlow;
             } else if (last.operatingCashFlow != null && last.capitalExpenditure != null) {
@@ -261,6 +333,18 @@ async function startServer() {
               const month = d.getUTCMonth() + 1;
               const year  = d.getUTCFullYear();
               quarterFCFLabel = `${Math.ceil(month / 3)}Q${year}`;
+            }
+
+            if (prev2 && prevQuarterFCF == null) {
+              if (prev2.freeCashFlow != null) {
+                prevQuarterFCF = prev2.freeCashFlow;
+              } else if (prev2.operatingCashFlow != null && prev2.capitalExpenditure != null) {
+                prevQuarterFCF = prev2.operatingCashFlow + prev2.capitalExpenditure;
+              }
+              if (prev2.date) {
+                const d = new Date(prev2.date);
+                prevQuarterFCFLabel = `${Math.ceil((d.getUTCMonth() + 1) / 3)}Q${d.getUTCFullYear()}`;
+              }
             }
           }
         } catch {}
@@ -314,6 +398,8 @@ async function startServer() {
           epsTTM: quote.defaultKeyStatistics?.trailingEps || null,
           quarterFCF,
           quarterFCFLabel,
+          prevQuarterFCF,
+          prevQuarterFCFLabel,
         }
       };
       cache.set(cacheKey, result, 3600);

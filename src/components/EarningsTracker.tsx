@@ -23,8 +23,10 @@ interface EarningsData {
     lastEpsEstimate: number | null;
     epsBeatMiss: number | null;
     epsBeatMissPct: number | null;
-    quarterFCF: number | null;        // 單季自由現金流量（美元）
-    quarterFCFLabel: string | null;   // 季度標籤（如 '2Q2026'）
+    quarterFCF: number | null;            // 當季自由現金流量（美元）
+    quarterFCFLabel: string | null;       // 當季標籤（如 '2Q2026'）
+    prevQuarterFCF: number | null;        // 前一季自由現金流量（美元）
+    prevQuarterFCFLabel: string | null;   // 前一季標籤（如 '1Q2026'）
   };
 }
 
@@ -84,13 +86,13 @@ export default function EarningsTracker({ onSelectStock }: { onSelectStock?: (sy
   const getFallbackFor = (symbol: string): EarningsData => {
     const fallbacks: Record<string, any> = {
       // quarterFCF 單位：美元（單季），參考 2025 年各季實際值
-      'AAPL':  { name: 'Apple Inc.',       margin: 0.26, growth: 0.05, quarterFCF: 29_000_000_000, quarterFCFLabel: '2Q2026' }, // ~$29B/季
-      'MSFT':  { name: 'Microsoft Corp.',  margin: 0.35, growth: 0.18, quarterFCF: 21_000_000_000, quarterFCFLabel: '3Q2025' }, // ~$21B/季
-      'GOOGL': { name: 'Alphabet Inc.',    margin: 0.24, growth: 0.14, quarterFCF: 18_000_000_000, quarterFCFLabel: '2Q2025' }, // ~$18B/季
-      'AMZN':  { name: 'Amazon.com Inc.',  margin: 0.06, growth: 0.12, quarterFCF: 21_000_000_000, quarterFCFLabel: '2Q2025' }, // ~$21B/季
-      'META':  { name: 'Meta Platforms',   margin: 0.29, growth: 0.27, quarterFCF: 13_000_000_000, quarterFCFLabel: '2Q2025' }, // ~$13B/季
-      'TSLA':  { name: 'Tesla, Inc.',      margin: 0.15, growth: 0.09, quarterFCF:    900_000_000, quarterFCFLabel: '2Q2025' }, // ~$0.9B/季
-      'NVDA':  { name: 'NVIDIA Corp.',     margin: 0.49, growth: 2.65, quarterFCF: 18_000_000_000, quarterFCFLabel: '1Q2026' }, // ~$18B/季
+      'AAPL':  { name: 'Apple Inc.',       margin: 0.26, growth: 0.05, quarterFCF: 29_000_000_000, quarterFCFLabel: '2Q2026', prevQuarterFCF: 24_000_000_000, prevQuarterFCFLabel: '1Q2026' },
+      'MSFT':  { name: 'Microsoft Corp.',  margin: 0.35, growth: 0.18, quarterFCF: 21_000_000_000, quarterFCFLabel: '3Q2025', prevQuarterFCF: 19_000_000_000, prevQuarterFCFLabel: '2Q2025' },
+      'GOOGL': { name: 'Alphabet Inc.',    margin: 0.24, growth: 0.14, quarterFCF: 18_000_000_000, quarterFCFLabel: '2Q2025', prevQuarterFCF: 16_000_000_000, prevQuarterFCFLabel: '1Q2025' },
+      'AMZN':  { name: 'Amazon.com Inc.',  margin: 0.06, growth: 0.12, quarterFCF: 21_000_000_000, quarterFCFLabel: '2Q2025', prevQuarterFCF: 18_000_000_000, prevQuarterFCFLabel: '1Q2025' },
+      'META':  { name: 'Meta Platforms',   margin: 0.29, growth: 0.27, quarterFCF: 13_000_000_000, quarterFCFLabel: '2Q2025', prevQuarterFCF: 10_000_000_000, prevQuarterFCFLabel: '1Q2025' },
+      'TSLA':  { name: 'Tesla, Inc.',      margin: 0.15, growth: 0.09, quarterFCF:    900_000_000, quarterFCFLabel: '2Q2025', prevQuarterFCF:  -300_000_000,  prevQuarterFCFLabel: '1Q2025' },
+      'NVDA':  { name: 'NVIDIA Corp.',     margin: 0.49, growth: 2.65, quarterFCF: 18_000_000_000, quarterFCFLabel: '1Q2026', prevQuarterFCF: 14_000_000_000, prevQuarterFCFLabel: '4Q2025' },
     };
     
     const f = fallbacks[symbol] || { name: symbol, margin: 0.1, growth: 0.05 };
@@ -115,6 +117,8 @@ export default function EarningsTracker({ onSelectStock }: { onSelectStock?: (sy
         epsBeatMissPct: 6.7,
         quarterFCF: f.quarterFCF ?? null,
         quarterFCFLabel: f.quarterFCFLabel ?? null,
+        prevQuarterFCF: f.prevQuarterFCF ?? null,
+        prevQuarterFCFLabel: f.prevQuarterFCFLabel ?? null,
       }
     };
   };
@@ -457,6 +461,102 @@ export default function EarningsTracker({ onSelectStock }: { onSelectStock?: (sy
                           </div>
                         </div>
                       </div>
+
+                      {/* FCF Comparison 卡片（全寬，顯示當季 vs 前一季 QoQ 對比） */}
+                      {(item.summary?.quarterFCF != null || item.summary?.prevQuarterFCF != null) && (() => {
+                        const curr     = item.summary?.quarterFCF        ?? null;
+                        const prev     = item.summary?.prevQuarterFCF    ?? null;
+                        const currLbl  = item.summary?.quarterFCFLabel    ?? 'Last Q';
+                        const prevLbl  = item.summary?.prevQuarterFCFLabel ?? 'Prev Q';
+
+                        // QoQ 成長率：正值 = FCF 改善，負值 = 惡化
+                        const qoqPct = curr != null && prev != null && prev !== 0
+                          ? ((curr - prev) / Math.abs(prev)) * 100
+                          : null;
+
+                        // FCF 金額格式化
+                        const fmtFCF = (v: number | null) => {
+                          if (v == null) return 'N/A';
+                          const abs  = Math.abs(v);
+                          const sign = v < 0 ? '-' : '';
+                          if (abs >= 1e12) return `${sign}$${(abs / 1e12).toFixed(1)}T`;
+                          if (abs >= 1e9)  return `${sign}$${(abs / 1e9).toFixed(1)}B`;
+                          if (abs >= 1e6)  return `${sign}$${(abs / 1e6).toFixed(1)}M`;
+                          return `${sign}$${abs.toLocaleString()}`;
+                        };
+
+                        // 顏色：正 FCF = 綠，負 FCF = 紅
+                        const currColor = curr == null ? 'text-text-dim' : curr >= 0 ? 'text-emerald-400' : 'text-rose-400';
+                        const prevColor = prev == null ? 'text-text-dim' : prev >= 0 ? 'text-emerald-400/70' : 'text-rose-400/70';
+
+                        // QoQ 信號
+                        const qoqBadge = qoqPct == null ? null
+                          : qoqPct > 10   ? { label: '📈 大幅改善', cls: 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' }
+                          : qoqPct > 0    ? { label: '↑ 環比改善', cls: 'bg-emerald-500/8 text-emerald-400/80 border border-emerald-500/15' }
+                          : qoqPct > -10  ? { label: '↓ 環比下滑', cls: 'bg-rose-500/8 text-rose-400/80 border border-rose-500/15' }
+                          :                 { label: '📉 大幅下滑', cls: 'bg-rose-500/10 text-rose-400 border border-rose-500/20' };
+
+                        return (
+                          <div className="p-4 bg-card-bg border border-border-subtle rounded-xl">
+                            <div className="flex justify-between items-center mb-3">
+                              <span className="text-[10px] font-bold text-text-dim uppercase tracking-widest">
+                                FCF Comparison ({currLbl})
+                              </span>
+                              {qoqBadge && (
+                                <span className={`text-[9px] px-2 py-0.5 rounded-full font-bold font-mono tracking-wide ${qoqBadge.cls}`}>
+                                  {qoqBadge.label}
+                                </span>
+                              )}
+                            </div>
+
+                            <div className="grid grid-cols-3 gap-2 items-center">
+                              {/* 當季 FCF（主角） */}
+                              <div className="text-left">
+                                <p className="text-[8px] text-text-dim/50 uppercase mb-1 font-semibold tracking-wider">
+                                  {currLbl} Actual
+                                </p>
+                                <p className={`text-lg sm:text-xl font-bold font-mono ${currColor}`}>
+                                  {fmtFCF(curr)}
+                                </p>
+                                <p className="text-[8px] text-text-dim/40 mt-0.5 font-mono">自由現金流</p>
+                              </div>
+
+                              {/* QoQ 環比變化（中間欄） */}
+                              <div className="text-center border-x border-border-subtle/50 px-2">
+                                <p className="text-[8px] text-text-dim/50 uppercase mb-1 font-semibold tracking-wider">
+                                  QoQ Change
+                                </p>
+                                <p className={`text-lg sm:text-xl font-bold font-mono ${
+                                  qoqPct == null ? 'text-text-dim/50'
+                                  : qoqPct > 0   ? 'text-emerald-400'
+                                  :                'text-rose-400'
+                                }`}>
+                                  {qoqPct != null
+                                    ? `${qoqPct > 0 ? '+' : ''}${qoqPct.toFixed(1)}%`
+                                    : 'N/A'}
+                                </p>
+                                <p className="text-[8px] text-text-dim/40 mt-0.5 font-mono">季度環比</p>
+                              </div>
+
+                              {/* 前一季 FCF（對比） */}
+                              <div className="text-right">
+                                <p className="text-[8px] text-text-dim/50 uppercase mb-1 font-semibold tracking-wider">
+                                  {prevLbl} Actual
+                                </p>
+                                <p className={`text-lg sm:text-xl font-bold font-mono ${prevColor}`}>
+                                  {fmtFCF(prev)}
+                                </p>
+                                <p className="text-[8px] text-text-dim/40 mt-0.5 font-mono">前一季</p>
+                              </div>
+                            </div>
+
+                            {/* FCF 說明標注 */}
+                            <p className="text-[8px] text-text-dim/30 mt-3 pt-2 border-t border-border-subtle/30 font-mono">
+                              FCF = 營業現金流 − 資本支出 · 正值代表企業自我造血能力強 · 來源：Yahoo Finance 季度現金流量表
+                            </p>
+                          </div>
+                        );
+                      })()}
 
                       {/* Detail Link */}
                       {onSelectStock && (
