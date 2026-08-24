@@ -20,6 +20,8 @@ interface Sentiment {
   taiwanMargin?: {
     maintenanceRatio: number;
     maintenanceRatioIsLive: boolean;
+    maintenanceRatioSource?: 'env' | 'api' | 'fallback';
+    maintenanceRatioDate?: string | null;
     marginBalance: number;
     marginDailyChange: number;
     shortBalance: number;
@@ -677,7 +679,19 @@ export default function MarketSentiment() {
           nfp: { actual: '57K', previous: '129K', forecast: '130K', nextRelease: '2026-08-07 20:30 (TPE)', dataSource: 'PAYEMS' },
           cpi: { actual: '4.2%', previous: '3.8%', forecast: '2.4%', nextRelease: '2026-07-14 20:30 (TPE)', dataSource: 'CPIAUCSL' },
           ppi: { actual: '8.8%', previous: '6.4%', forecast: '3.2%', nextRelease: '2026-07-15 20:30 (TPE)', dataSource: 'WPSFD49207' },
-          core_ppi: { actual: '2.4%', previous: '2.1%', forecast: '3.0%', nextRelease: '2026-07-15 20:30 (TPE)', dataSource: 'WPSFD4111' }
+          core_ppi: { actual: '2.4%', previous: '2.1%', forecast: '3.0%', nextRelease: '2026-07-15 20:30 (TPE)', dataSource: 'WPSFD4111' },
+          sahm: {
+            sahmValue: 0.43,
+            sahmPrev: 0.38,
+            sahmDate: '2026-06-01',
+            sahmTrend: 0.05,
+            signal: 'warning',
+            unrate: 4.1,
+            unratePrev: 4.0,
+            unrateTrend: 0.1,
+            unrateDate: '2026-06-01',
+            isLive: false,
+          },
         });
       } finally {
         setMacroLoading(false);
@@ -2238,6 +2252,225 @@ export default function MarketSentiment() {
           })}
         </div>
       </section>
+
+      {/* 薩姆規則（Sahm Rule）衰退警示模組 */}
+      {(() => {
+        const sahm = (macroData as any)?.sahm;
+        const sahmVal     = Math.max(0, sahm?.sahmValue ?? 0.43); // 前端再次強制非負（防禦）
+        const unrateVal   = sahm?.unrate     ?? 4.1;
+        const unratePrev  = sahm?.unratePrev ?? null;
+        const unrateTrend = sahm?.unrateTrend ?? null; // 正=上升(惡化)，負=下降(改善)
+        const sahmSignal = sahm?.signal ?? 'warning';
+        const isLive = sahm?.isLive ?? false;
+        const sahmDate = sahm?.sahmDate
+          ? new Date(sahm.sahmDate).toLocaleDateString('zh-TW', { year: 'numeric', month: '2-digit' })
+          : '2026/06';
+
+        // 燈號配置
+        const signalConfig = {
+          triggered: {
+            badge: '🔴 已觸發（硬著陸恐慌）',
+            badgeClass: 'bg-rose-500/20 text-rose-400 border border-rose-500/30 animate-pulse',
+            borderClass: 'border-rose-500/40 bg-rose-500/5',
+            desc: '薩姆規則已正式觸發（≥ 0.5%），歷史上 100% 對應美國經濟衰退，勞動市場非線性崩塌已經啟動。',
+            action: '防禦優先：大幅降低持股水位至 30% 以下，增配美債（TLT/IEF）與現金。',
+            barColor: 'bg-rose-500',
+          },
+          warning: {
+            badge: '🟡 警戒區（接近觸發門檻）',
+            badgeClass: 'bg-yellow-500/20 text-yellow-400 border border-yellow-500/30',
+            borderClass: 'border-yellow-500/30 bg-yellow-500/5',
+            desc: `薩姆指標目前為 +${sahmVal.toFixed(2)}%，逼近 0.50% 觸發門檻。失業率移動平均呈現上升趨勢，需高度戒備。`,
+            action: '提高警覺：嚴格設定停損，獲利了結高估值個股，避免重倉週期性與無獲利成長股。',
+            barColor: 'bg-yellow-400',
+          },
+          safe: {
+            badge: '🟢 安全區（勞動市場穩健）',
+            badgeClass: 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30',
+            borderClass: 'border-emerald-500/20 bg-emerald-500/5',
+            desc: `薩姆指標處於安全水位（+${sahmVal.toFixed(2)}% < 0.30%），勞動市場健康，無立即性非線性衰退風險。`,
+            action: '維持正常節奏：依基本面與技術面逢低布局，無須因總經衰退恐慌過度防禦。',
+            barColor: 'bg-emerald-400',
+          },
+        }[sahmSignal as 'triggered' | 'warning' | 'safe'] || {
+          badge: '🟡 警戒區',
+          badgeClass: 'bg-yellow-500/20 text-yellow-400 border border-yellow-500/30',
+          borderClass: 'border-yellow-500/30 bg-yellow-500/5',
+          desc: '數據載入中...',
+          action: '持續觀察數據更新。',
+          barColor: 'bg-yellow-400',
+        };
+
+        // 進度條比例（0 ~ 1.0% 對應 0 ~ 100%）
+        const progressPct = Math.min(Math.max((sahmVal / 1.0) * 100, 0), 100);
+
+        return (
+          <motion.div
+            initial={{ opacity: 0, y: 15 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.4 }}
+            className={`sleek-card p-6 border ${signalConfig.borderClass} relative overflow-hidden`}
+          >
+            {/* Header */}
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-4">
+              <div className="flex items-center gap-2">
+                <AlertTriangle className="w-5 h-5 text-yellow-400 shrink-0" />
+                <div>
+                  <div className="flex items-center gap-2">
+                    <span className="font-bold text-text-bright text-base">薩姆規則（Sahm Rule）衰退警示</span>
+                    <span className="text-[9px] px-1.5 py-0.5 rounded bg-white/5 text-text-dim border border-white/10 font-mono">
+                      FRED: SAHMREALTIME
+                    </span>
+                  </div>
+                  <span className="text-[10px] text-text-dim/70 block">
+                    Claudia Sahm 提出 · 1970 年代以來 100% 準確率的衰退領先/同步指標
+                  </span>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2 shrink-0">
+                <span className={`text-[10px] font-mono font-bold px-2.5 py-1 rounded-full ${signalConfig.badgeClass}`}>
+                  {signalConfig.badge}
+                </span>
+              </div>
+            </div>
+
+            {/* 原理提示 */}
+            <div className="text-[11px] text-text-dim/80 bg-card-bg/40 p-3 rounded-lg border border-border-subtle/50 mb-5 leading-relaxed">
+              💡 <span className="text-text-bright font-semibold">觸發條件：</span>
+              當失業率的 3 個月移動平均，比過去 12 個月的最低 3 個月移動平均高出 <span className="text-rose-400 font-mono font-bold">≥ 0.50 個百分點</span> 時，代表勞動市場已啟動非線性崩塌，經濟已進入衰退。
+            </div>
+
+            {/* 核心數據卡片 */}
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-5">
+              {/* 薩姆差值 */}
+              <div className="bg-card-bg/60 p-4 rounded-xl border border-border-subtle flex flex-col justify-between">
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-[10px] font-bold text-text-dim uppercase tracking-wider">薩姆指標差值</span>
+                  <span className="text-[9px] font-mono text-text-dim/60">{sahmDate}</span>
+                </div>
+                <div className="flex items-baseline gap-2">
+                  <span className={`text-3xl font-mono font-bold ${
+                    sahmVal >= 0.5 ? 'text-rose-400' : sahmVal >= 0.3 ? 'text-yellow-400' : 'text-emerald-400'
+                  }`}>
+                    +{sahmVal.toFixed(2)}%
+                  </span>
+                  <span className="text-xs font-mono text-text-dim">/ 門檻 0.50%</span>
+                </div>
+                <div className="flex items-center gap-1.5 mt-2">
+                  <div className={`w-1.5 h-1.5 rounded-full ${isLive ? 'bg-emerald-400' : 'bg-amber-400'}`} />
+                  <span className="text-[9px] text-text-dim/60 font-mono">
+                    {isLive ? 'FRED Live' : '靜態備援'}
+                    {sahm?.sahmTrend != null && (
+                      <span className={sahm.sahmTrend > 0 ? ' text-rose-400' : ' text-emerald-400'}>
+                        {` · 月變動 ${sahm.sahmTrend > 0 ? '+' : ''}${sahm.sahmTrend.toFixed(2)}%`}
+                      </span>
+                    )}
+                  </span>
+                </div>
+              </div>
+
+              {/* 當前失業率 */}
+              <div className="bg-card-bg/60 p-4 rounded-xl border border-border-subtle flex flex-col justify-between">
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-[10px] font-bold text-text-dim uppercase tracking-wider">美國官方失業率</span>
+                  <span className="text-[9px] font-mono text-text-dim/60">UNRATE</span>
+                </div>
+                <div className="flex items-baseline gap-2">
+                  <span className="text-3xl font-mono font-bold text-text-bright">
+                    {unrateVal.toFixed(1)}%
+                  </span>
+                  {sahm?.unratePrev != null && (
+                    <span className="text-xs font-mono text-text-dim">
+                      前值 {sahm.unratePrev.toFixed(1)}%
+                    </span>
+                  )}
+                </div>
+                <span className="text-[9px] text-text-dim/60 font-mono mt-2">
+                  {(() => {
+                    // 三態判斷：上升 / 持平 / 下降
+                    const rising  = unrateTrend != null ? unrateTrend > 0  : null; // true=上升
+                    const falling = unrateTrend != null ? unrateTrend < 0  : null; // true=下降
+                    const flat    = unrateTrend != null ? unrateTrend === 0 : null; // true=持平
+
+                    if (unrateVal >= 4.5 && rising)   return '🔴 顯著攀升';
+                    if (unrateVal >= 4.5 && flat)     return '🔴 高位持平';
+                    if (unrateVal >= 4.5 && falling)  return '🟡 高位回落';
+                    if (unrateVal >= 4.0 && rising)   return '🟡 溫和上揚';
+                    if (unrateVal >= 4.0 && flat)     return '⚪ 持平觀察';
+                    if (unrateVal >= 4.0 && falling)  return '🟢 溫和回落';
+                    if (rising)                       return '🟡 低位上揚';
+                    if (flat)                         return '🟢 低位持平';
+                    if (falling)                      return '🟢 低位穩健';
+                    return '🟢 低位穩健';
+                  })()}
+                </span>
+              </div>
+
+              {/* 歷史門檻參考 */}
+              <div className="bg-card-bg/60 p-4 rounded-xl border border-border-subtle flex flex-col justify-between">
+                <span className="text-[10px] font-bold text-text-dim uppercase tracking-wider mb-1">門檻區間對照</span>
+                <div className="space-y-1 text-[10px] font-mono">
+                  <div className="flex justify-between items-center text-rose-400">
+                    <span>≥ +0.50%</span>
+                    <span className="font-bold">衰退觸發（100% 歷史命中）</span>
+                  </div>
+                  <div className="flex justify-between items-center text-yellow-400">
+                    <span>+0.30% ~ +0.49%</span>
+                    <span className="font-bold">警戒區（加劇觀察）</span>
+                  </div>
+                  <div className="flex justify-between items-center text-emerald-400">
+                    <span>&lt; +0.30%</span>
+                    <span className="font-bold">安全區（勞動市場穩健）</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* 進度條 */}
+            <div className="mb-4">
+              <div className="flex justify-between text-[9px] font-mono text-text-dim/60 mb-1">
+                <span>0.0%（安全）</span>
+                <span className="text-yellow-400">0.30%（警戒）</span>
+                <span className="text-rose-400 font-bold">0.50%（衰退觸發）</span>
+                <span>1.0%</span>
+              </div>
+              <div className="relative h-2.5 bg-border-subtle rounded-full overflow-hidden">
+                <motion.div
+                  initial={{ width: 0 }}
+                  animate={{ width: `${progressPct}%` }}
+                  transition={{ duration: 1.2, ease: 'easeOut' }}
+                  className={`h-full rounded-full ${signalConfig.barColor}`}
+                />
+                {/* 0.5% 門檻標記線 */}
+                <div
+                  className="absolute top-0 bottom-0 w-0.5 bg-rose-500/80 z-10"
+                  style={{ left: '50%' }}
+                  title="0.5% 觸發門檻"
+                />
+                {/* 0.3% 警戒標記線 */}
+                <div
+                  className="absolute top-0 bottom-0 w-0.5 bg-yellow-400/60 z-10"
+                  style={{ left: '30%' }}
+                  title="0.3% 警戒門檻"
+                />
+              </div>
+            </div>
+
+            {/* 狀態說明與操作建議 */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-3 border-t border-border-subtle/40 text-xs">
+              <div>
+                <span className="text-[10px] font-bold text-text-dim uppercase tracking-wider block mb-1">現況判讀</span>
+                <p className="text-text-secondary leading-relaxed text-[11px]">{signalConfig.desc}</p>
+              </div>
+              <div>
+                <span className="text-[10px] font-bold text-text-dim uppercase tracking-wider block mb-1">操盤對策</span>
+                <p className="text-text-secondary leading-relaxed text-[11px] font-medium">{signalConfig.action}</p>
+              </div>
+            </div>
+          </motion.div>
+        );
+      })()}
 
       {/* 結構性系統風險雷達 */}
       {(() => {
@@ -4023,7 +4256,8 @@ export default function MarketSentiment() {
             {(() => {
               const twRatio      = sentiment?.taiwanMargin?.maintenanceRatio ?? 156.27;
               const twRatioLive  = sentiment?.taiwanMargin?.maintenanceRatioIsLive ?? false;
-              const twRatioDate  = sentiment?.taiwanMargin?.maintenanceRatioDate ?? '';
+              const twRatioSource = sentiment?.taiwanMargin?.maintenanceRatioSource ?? (twRatioLive ? 'api' : 'fallback');
+              const twRatioDate  = sentiment?.taiwanMargin?.maintenanceRatioDate ?? sentiment?.taiwanMargin?.date ?? '';
               const twBalance    = sentiment?.taiwanMargin?.marginBalance ?? 9350.0;   // 萬張
               const twChange     = sentiment?.taiwanMargin?.marginDailyChange ?? -50.0; // 萬張
               const twShort      = sentiment?.taiwanMargin?.shortBalance ?? 205.0;      // 萬張（融券）
@@ -4058,8 +4292,14 @@ export default function MarketSentiment() {
                   <div>
                     <div className="flex items-center justify-between mb-3">
                       <span className="text-xs font-bold text-text-secondary">台股融資維持率與增減</span>
-                      <span className={`text-[10px] px-2 py-0.5 rounded-full font-mono ${isLive ? 'bg-emerald-500/10 text-emerald-400' : 'bg-orange-500/10 text-orange-400'}`}>
-                        {isLive ? 'Live Data' : 'Fallback'}
+                      <span className={`text-[10px] px-2 py-0.5 rounded-full font-mono ${
+                        twRatioSource === 'env' 
+                          ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 font-bold'
+                          : isLive 
+                            ? 'bg-sky-500/10 text-sky-400' 
+                            : 'bg-orange-500/10 text-orange-400'
+                      }`}>
+                        {twRatioSource === 'env' ? '✓ 官方精確值' : isLive ? 'TWSE Live' : 'Fallback'}
                       </span>
                     </div>
 
@@ -4084,11 +4324,11 @@ export default function MarketSentiment() {
                       </div>
                       {/* 新增：融資餘額與融資/融券比 */}
                       <div className="flex justify-between items-center py-1 border-t border-border-subtle/20 mt-1">
-                        <span className="text-text-dim">融資餘額:</span>
+                        <span className="text-text-dim">融資餘額 (上市+上櫃):</span>
                         <span className="font-mono text-text-secondary">
                           {twBalance.toFixed(0)} 萬張
                           <span className={`ml-1.5 text-[9px] px-1.5 rounded font-bold ${isLive ? 'text-emerald-400 bg-emerald-500/10' : 'text-orange-400 bg-orange-500/10'}`}>
-                            {isLive ? 'TWSE Live' : 'Fallback'}
+                            {isLive ? 'Live' : 'Fallback'}
                           </span>
                         </span>
                       </div>
@@ -4101,13 +4341,17 @@ export default function MarketSentiment() {
                       <div className="flex justify-between items-center py-1">
                         <span className="text-text-dim">維持率資料:</span>
                         <span className={`text-[9px] font-mono font-bold px-1.5 py-0.5 rounded ${
-                          twRatioLive
-                            ? 'text-sky-400 bg-sky-500/10'
-                            : 'text-orange-400/70 bg-orange-500/5'
+                          twRatioSource === 'env'
+                            ? 'text-emerald-400 bg-emerald-500/10 border border-emerald-500/20'
+                            : twRatioLive
+                              ? 'text-sky-400 bg-sky-500/10'
+                              : 'text-orange-400/70 bg-orange-500/5'
                         }`}>
-                          {twRatioLive
-                            ? `估算值 · ${twRatioDate}`
-                            : '靜態備援（計算失敗）'}
+                          {twRatioSource === 'env'
+                            ? `官方公告 · ${twRatioDate}`
+                            : twRatioLive
+                              ? `估算值 · ${twRatioDate}`
+                              : '靜態備援'}
                         </span>
                       </div>
                       <div className="pt-1.5 border-t border-border-subtle/50 text-[10px]">

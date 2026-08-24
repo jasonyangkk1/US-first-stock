@@ -4,11 +4,13 @@ const FRED_API_KEY = process.env.FRED_API_KEY ? process.env.FRED_API_KEY.trim().
 const FRED_BASE_URL = 'https://api.stlouisfed.org/fred/series/observations';
 
 const SERIES = {
-  NFP: 'PAYEMS',
-  ADP: 'ADPMNUSNERSA',
-  CPI: 'CPIAUCSL',
-  PPI: 'WPSFD49207',
+  NFP:    'PAYEMS',
+  ADP:    'ADPMNUSNERSA',
+  CPI:    'CPIAUCSL',
+  PPI:    'WPSFD49207',
   CORE_PPI: 'WPSFD4111',
+  SAHM:   'SAHMREALTIME',  // Real-time Sahm Rule Recession Indicator（百分點差值）
+  UNRATE: 'UNRATE',        // 美國失業率（季調，月度，%）
 };
 
 const PPI_FALLBACK = 'PPIFGS';
@@ -348,7 +350,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
   // Parallel fetch using Promise.allSettled, but spreading them out to avoid FRED burst 429 rate limit
-  const [nfpResult, adpResult, cpiResult, ppiResult, corePpiResult, ppiFallbackResult, corePpiFallbackResult] = await Promise.allSettled([
+  const [nfpResult, adpResult, cpiResult, ppiResult, corePpiResult, ppiFallbackResult, corePpiFallbackResult, sahmResult, unrateResult] = await Promise.allSettled([
     fetchFred(SERIES.NFP, 6),
     delay(200).then(() => fetchFred(SERIES.ADP, 8)),
     delay(400).then(() => fetchFred(SERIES.CPI, 20)),
@@ -356,6 +358,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     delay(800).then(() => fetchFred(SERIES.CORE_PPI, 20)),
     delay(1000).then(() => fetchFred(PPI_FALLBACK, 20)),
     delay(1200).then(() => fetchFred(CORE_PPI_FALLBACK, 20)),
+    delay(1400).then(() => fetchFred(SERIES.SAHM, 4)),    // 取最新 4 筆（含趨勢）
+    delay(1600).then(() => fetchFred(SERIES.UNRATE, 4)),  // 取最新 4 筆
   ]);
 
   const safeGet = (r: PromiseSettledResult<any>) => r.status === 'fulfilled' ? r.value : null;
@@ -382,6 +386,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const corePpiFallback = safeGet(corePpiFallbackResult);
   const corePpiIsMain = !!(corePpiMain && corePpiMain.length >= 14);
   const corePpiData = corePpiIsMain ? corePpiMain : corePpiFallback;
+
+  const sahmData   = safeGet(sahmResult);
+  const unrateData = safeGet(unrateResult);
 
   console.log('[macro] Series used:', {
     ppi: ppiIsMain ? SERIES.PPI : PPI_FALLBACK,
@@ -534,7 +541,63 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       dataDate: corePpiData?.[0]?.date ?? null,
       dataSource: corePpiIsMain ? SERIES.CORE_PPI : CORE_PPI_FALLBACK,
       lastUpdated: new Date().toISOString()
-    }
+    },
+    sahm: (() => {
+      // SAHMREALTIME 恆 >= 0（定義：Max(0, 當前3個月MA - 過去12個月最低3個月MA)）
+      // 但 FRED real-time 版本偶有浮動誤差產生極小負值，故強制非負
+      //
+      // fetchFred 使用 sort_order=desc，故 [0]=最新、[1]=前一月
+      // 雙保險：同時嘗試 [最後一筆] 和 [0]，取較新的有效值
+      const latestIdx    = sahmData != null ? sahmData.length - 1 : -1;
+      const rawCurrent   = sahmData?.[latestIdx]?.value  ?? sahmData?.[0]?.value  ?? null;
+      const rawPrev      = sahmData != null
+        ? (sahmData.length >= 2 ? sahmData[latestIdx - 1]?.value ?? sahmData[1]?.value : null)
+        : null;
+      const currentDate  = sahmData?.[latestIdx]?.date ?? sahmData?.[0]?.date ?? null;
+
+      // 強制非負（SAHMREALTIME 數學定義恆 >= 0，負值是 FRED 資料浮動誤差）
+      const currentVal = rawCurrent != null ? Math.max(0, rawCurrent) : null;
+      const prevVal    = rawPrev    != null ? Math.max(0, rawPrev)    : null;
+
+      // 失業率（同樣取最新）
+      const urLatestIdx = unrateData != null ? unrateData.length - 1 : -1;
+      const unrate      = unrateData?.[urLatestIdx]?.value ?? unrateData?.[0]?.value ?? null;
+      const unrateDate  = unrateData?.[urLatestIdx]?.date  ?? unrateData?.[0]?.date  ?? null;
+      const unratePrev  = unrateData != null && unrateData.length >= 2
+        ? (unrateData[urLatestIdx - 1]?.value ?? unrateData[1]?.value ?? null)
+        : null;
+
+      // 觸發判斷（非負值後才判斷）
+      let signal: 'triggered' | 'warning' | 'safe' | null = null;
+      if (currentVal != null) {
+        if (currentVal >= 0.5)      signal = 'triggered';
+        else if (currentVal >= 0.3) signal = 'warning';
+        else                        signal = 'safe';
+      }
+
+      // 月趨勢：正值=惡化，負值=改善
+      const trend = (currentVal != null && prevVal != null)
+        ? parseFloat((currentVal - prevVal).toFixed(2))
+        : null;
+
+      // 失業率趨勢：正值=上升（負面），負值=下降（正面）
+      const unrateTrend = (unrate != null && unratePrev != null)
+        ? parseFloat((unrate - unratePrev).toFixed(1))
+        : null;
+
+      return {
+        sahmValue:    currentVal  != null ? parseFloat(currentVal.toFixed(2))  : null,
+        sahmPrev:     prevVal     != null ? parseFloat(prevVal.toFixed(2))     : null,
+        sahmDate:     currentDate,
+        sahmTrend:    trend,
+        signal,
+        unrate:       unrate      != null ? parseFloat(unrate.toFixed(1))      : null,
+        unratePrev:   unratePrev  != null ? parseFloat(unratePrev.toFixed(1))  : null,
+        unrateTrend,   // 新增：正=上升(惡化)，負=下降(改善)
+        unrateDate,
+        isLive: sahmData != null,
+      };
+    })(),
   };
 
   console.log('[macro] Data status:', {

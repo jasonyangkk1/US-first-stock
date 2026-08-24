@@ -4,8 +4,23 @@ import { yahooFinance } from './_helpers.js';
 
 const CNN_URL = 'https://production.dataviz.cnn.io/index/fearandgreed/graphdata';
 
+// ── Vercel 環境變數精確維持率（最高優先，0誤差）──────────────────────────
+// 設定方式：Vercel Dashboard → Settings → Environment Variables
+//   TWSE_MAINTENANCE_RATIO = 194.0        （當日整戶融資維持率，%）
+//   TWSE_MAINTENANCE_DATE  = 2026-08-15   （對應日期，YYYY-MM-DD）
+// 每週查詢 TWSE 官方公告後更新一次即可。
+function getMaintenanceRatioFromEnv(): { ratio: number; isoDate: string } | null {
+  const rawRatio = process.env.TWSE_MAINTENANCE_RATIO;
+  const rawDate  = process.env.TWSE_MAINTENANCE_DATE;
+  if (!rawRatio) return null;
+  const ratio = parseFloat(rawRatio);
+  if (isNaN(ratio) || ratio < 50 || ratio > 500) return null;
+  const isoDate = rawDate ?? new Date().toISOString().slice(0, 10);
+  console.log(`[sentiment] Maintenance ratio from env: ${ratio}% @ ${isoDate}`);
+  return { ratio, isoDate };
+}
+
 // ── 台股融資靜態備援（TWSE API 完全失敗時的最終保底）──
-// 每週手動更新一次即可（正常情況下不會用到，動態 API 已覆蓋）
 const TW_MARGIN_FALLBACK = {
   maintenanceRatio: 156.27,      // 整戶融資維持率（%）← 7/14 實際值
   maintenanceRatioIsLive: false,
@@ -245,7 +260,7 @@ async function fetchMaintenanceRatioLatest(): Promise<{
   }
 }
 
-// ── 從 TWSE OpenAPI v1 MI_MARGN 取得融資餘額、增減、融券（修正版）──
+// ── 從 TWSE OpenAPI v1 MI_MARGN + TPEx OpenAPI 取得融資餘額、增減、融券（上市+上櫃合計）──
 async function fetchMarginBalance(): Promise<{
   marginBalance: number;
   marginDailyChange: number;
@@ -254,58 +269,81 @@ async function fetchMarginBalance(): Promise<{
   balanceDate: string | null;
 } | null> {
   try {
-    const url = 'https://openapi.twse.com.tw/v1/exchangeReport/MI_MARGN';
-    const res = await fetchWithTimeout(url, { headers: { Accept: 'application/json' } }, 8000);
-    if (!res.ok) return null;
-
-    const raw: any[] = await res.json();
-    if (!Array.isArray(raw) || raw.length === 0) return null;
-
     const parseNum = (s: string | number) =>
       typeof s === 'number' ? s : parseFloat(String(s).replace(/,/g, '')) || 0;
 
-    // 關鍵修正：openapi MI_MARGN 只有個股資料，沒有合計列
-    // 必須對所有個股加總，才能得到全市場融資合計
+    // 並行取得上市 (TWSE) 與上櫃 (TPEx) 融資券資料
+    const twseUrl = 'https://openapi.twse.com.tw/v1/exchangeReport/MI_MARGN';
+    const tpexUrl = 'https://www.tpex.org.tw/openapi/v1/tpex_margin_bal';
+
+    const [twseRes, tpexRes] = await Promise.allSettled([
+      fetchWithTimeout(twseUrl, { headers: { Accept: 'application/json' } }, 8000),
+      fetchWithTimeout(tpexUrl, { headers: { Accept: 'application/json' } }, 8000),
+    ]);
+
     let totalMarginToday  = 0;
     let totalShortToday   = 0;
-    // 流量法：當日融資淨增減 = 買進 - 賣出 - 現金償還
-    // 不依賴 TodayBalance vs YesterdayBalance（兩者盤後前可能相等）
     let totalMarginBuy    = 0;
     let totalMarginSell   = 0;
     let totalMarginRepay  = 0;
     let latestDate: string | null = null;
 
-    for (const item of raw) {
-      // 融資餘額（取今日餘額，中/英文欄位名稱都嘗試）
-      totalMarginToday  += parseNum(item['融資今日餘額'] ?? item.MarginPurchaseTodayBalance ?? 0);
+    // 1. 處理上市 (TWSE)
+    if (twseRes.status === 'fulfilled' && twseRes.value.ok) {
+      try {
+        const raw: any[] = await twseRes.value.json();
+        if (Array.isArray(raw) && raw.length > 0) {
+          for (const item of raw) {
+            totalMarginToday += parseNum(item['融資今日餘額'] ?? item.MarginPurchaseTodayBalance ?? 0);
+            totalMarginBuy   += parseNum(item['融資買進'] ?? item.MarginPurchaseBuy ?? 0);
+            totalMarginSell  += parseNum(item['融資賣出'] ?? item.MarginPurchaseSell ?? 0);
+            totalMarginRepay += parseNum(
+              item['現金償還'] ?? item['融資現金償還'] ?? item.MarginPurchaseCashRepayment ?? 0
+            );
+            totalShortToday  += parseNum(item['融券今日餘額'] ?? item.ShortSaleTodayBalance ?? 0);
 
-      // 融資當日流量（用於計算淨增減，不受 Balance 更新時序影響）
-      totalMarginBuy    += parseNum(item['融資買進'] ?? item.MarginPurchaseBuy ?? 0);
-      totalMarginSell   += parseNum(item['融資賣出'] ?? item.MarginPurchaseSell ?? 0);
-      totalMarginRepay  += parseNum(
-        item['現金償還'] ?? item['融資現金償還'] ?? item.MarginPurchaseCashRepayment ?? 0
-      );
-
-      // 融券餘額
-      totalShortToday   += parseNum(item['融券今日餘額'] ?? item.ShortSaleTodayBalance ?? 0);
-
-      // 日期（所有列相同，取第一筆即可）
-      if (!latestDate) {
-        const d = item.Date || item['日期'];
-        if (d) latestDate = rocDateToIso(String(d));
+            if (!latestDate) {
+              const d = item.Date || item['日期'];
+              if (d) latestDate = rocDateToIso(String(d));
+            }
+          }
+        }
+      } catch (err: any) {
+        console.warn('[sentiment] TWSE parse failed:', err.message);
       }
     }
 
-    // 合理性驗證
-    if (totalMarginToday < 100_000_000) {
-      console.warn('[sentiment] MI_MARGN sum too small:', totalMarginToday,
-        '— API may have changed structure');
+    // 2. 處理上櫃 (TPEx)
+    if (tpexRes.status === 'fulfilled' && tpexRes.value.ok) {
+      try {
+        const rawTpex: any[] = await tpexRes.value.json();
+        if (Array.isArray(rawTpex) && rawTpex.length > 0) {
+          for (const item of rawTpex) {
+            totalMarginToday += parseNum(item['融資今日餘額'] ?? item.MarginPurchaseTodayBalance ?? item.TodayBalance ?? 0);
+            totalMarginBuy   += parseNum(item['融資買進'] ?? item.MarginPurchaseBuy ?? item.Buy ?? 0);
+            totalMarginSell  += parseNum(item['融資賣出'] ?? item.MarginPurchaseSell ?? item.Sell ?? 0);
+            totalMarginRepay += parseNum(
+              item['現金償還'] ?? item['融資現金償還'] ?? item.MarginPurchaseCashRepayment ?? item.CashRepayment ?? 0
+            );
+            totalShortToday  += parseNum(item['融券今日餘額'] ?? item.ShortSaleTodayBalance ?? item.ShortTodayBalance ?? 0);
+
+            if (!latestDate) {
+              const d = item.Date || item['日期'];
+              if (d) latestDate = rocDateToIso(String(d));
+            }
+          }
+        }
+      } catch (err: any) {
+        console.warn('[sentiment] TPEx parse failed:', err.message);
+      }
+    }
+
+    if (totalMarginToday === 0) {
+      console.warn('[sentiment] Total margin balance is 0 from both TWSE and TPEx');
+      return null;
     }
 
     // 當日淨融資增減 = 買進 - 賣出 - 現金償還（流量法）
-    // 數學等式：TodayBalance = YesterdayBalance + Buy - Sell - Repayment
-    // 所以 Buy - Sell - Repayment = TodayBalance - YesterdayBalance = 淨增減
-    // 流量欄位在盤後資料發布前即已有值，不受 Balance 未更新影響
     const totalMarginNetChange = totalMarginBuy - totalMarginSell - totalMarginRepay;
 
     // 單位：萬張（1 千股 = 1 張；÷ 10,000 得萬張）
@@ -316,7 +354,7 @@ async function fetchMarginBalance(): Promise<{
       ? parseFloat((totalMarginToday / totalShortToday).toFixed(1))
       : null;
 
-    console.log('[sentiment] MI_MARGN (萬張):', {
+    console.log('[sentiment] Market Margin Total (上市+上櫃, 萬張):', {
       totalMarginToday,
       buy: totalMarginBuy, sell: totalMarginSell, repay: totalMarginRepay,
       netChange: totalMarginNetChange,
@@ -332,7 +370,7 @@ async function fetchMarginBalance(): Promise<{
       balanceDate:       latestDate,
     };
   } catch (e) {
-    console.warn('[sentiment] MI_MARGN fetch failed:', (e as Error).message);
+    console.warn('[sentiment] Margin balance fetch failed:', (e as Error).message);
     return null;
   }
 }
@@ -340,31 +378,41 @@ async function fetchMarginBalance(): Promise<{
 // 主函數：並行取得維持率（帶日期回溯）+ 融資股數
 async function fetchTwseMarginData() {
   try {
-    const candidates = getCandidateDates(6);
-    console.log('[sentiment] TWSE RM candidates:', candidates);
+    // ── 0. 最高優先級：Vercel 環境變數精確覆寫 ──
+    const envRatio = getMaintenanceRatioFromEnv();
 
-    // ── 維持率：用 MI_MARGN + Yahoo Finance 動態計算 ──
-    // （TWSE FMTQIK 端點封鎖 Vercel IP，改用計算法）
-    let ratioResult: { ratio: number; isoDate: string } | null = null;
+    let ratioResult: { ratio: number; isoDate: string } | null = envRatio;
+    let ratioSource: 'env' | 'api' | 'fallback' = envRatio ? 'env' : 'fallback';
 
-    // 主要方案：動態計算（MI_MARGN 融資股數 × Yahoo Finance 股價）
-    ratioResult = await fetchMaintenanceRatioLatest();
-
-    // 備援：帶日期的 FMTQIK（若未來 TWSE 解除封鎖可自動恢復）
     if (!ratioResult) {
-      for (const dateStr of candidates) {
-        ratioResult = await fetchMaintenanceRatioForDate(dateStr);
-        if (ratioResult) break;
+      const candidates = getCandidateDates(6);
+      console.log('[sentiment] TWSE RM candidates:', candidates);
+
+      // 主要方案：動態計算（MI_MARGN 融資股數 × Yahoo Finance 股價）
+      ratioResult = await fetchMaintenanceRatioLatest();
+      if (ratioResult) {
+        ratioSource = 'api';
+      }
+
+      // 備援：帶日期的 FMTQIK（若未來 TWSE 解除封鎖可自動恢復）
+      if (!ratioResult) {
+        for (const dateStr of candidates) {
+          ratioResult = await fetchMaintenanceRatioForDate(dateStr);
+          if (ratioResult) {
+            ratioSource = 'api';
+            break;
+          }
+        }
       }
     }
 
     if (ratioResult) {
-      console.log(`[sentiment] TWSE ratio OK: ${ratioResult.ratio}% @ ${ratioResult.isoDate}`);
+      console.log(`[sentiment] TWSE ratio OK (${ratioSource}): ${ratioResult.ratio}% @ ${ratioResult.isoDate}`);
     } else {
       console.warn('[sentiment] TWSE ratio: all attempts failed, using fallback');
     }
 
-    // ── 融資股數（餘額/增減）：用 openapi 無日期版本 ──
+    // ── 融資股數（餘額/增減）：上市 + 上櫃加總 ──
     const balanceResult = await fetchMarginBalance();
 
     if (!ratioResult && !balanceResult) {
@@ -373,9 +421,10 @@ async function fetchTwseMarginData() {
     }
 
     return {
-      // 維持率（動態，最多 lag 1 個交易日）
+      // 維持率
       maintenanceRatio:       ratioResult?.ratio          ?? TW_MARGIN_FALLBACK.maintenanceRatio,
-      maintenanceRatioIsLive: ratioResult != null,         // true = 動態取得
+      maintenanceRatioIsLive: ratioResult != null,         // true = 非完全靜態備援
+      maintenanceRatioSource: ratioSource,                // 'env' | 'api' | 'fallback'
       maintenanceRatioDate:   ratioResult?.isoDate         ?? null,
 
       // 融資股數（動態）

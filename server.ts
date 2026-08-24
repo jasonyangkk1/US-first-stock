@@ -501,8 +501,23 @@ async function startServer() {
     }
   }
 
+  // ── Vercel 環境變數精確維持率（最高優先，0誤差）──────────────────────────
+  // 設定方式：Vercel Dashboard → Settings → Environment Variables
+  //   TWSE_MAINTENANCE_RATIO = 194.0        （當日整戶融資維持率，%）
+  //   TWSE_MAINTENANCE_DATE  = 2026-08-15   （對應日期，YYYY-MM-DD）
+  // 每週查詢 TWSE 官方公告後更新一次即可。
+  function getMaintenanceRatioFromEnv(): { ratio: number; isoDate: string } | null {
+    const rawRatio = process.env.TWSE_MAINTENANCE_RATIO;
+    const rawDate  = process.env.TWSE_MAINTENANCE_DATE;
+    if (!rawRatio) return null;
+    const ratio = parseFloat(rawRatio);
+    if (isNaN(ratio) || ratio < 50 || ratio > 500) return null;
+    const isoDate = rawDate ?? new Date().toISOString().slice(0, 10);
+    console.log(`[sentiment server] Maintenance ratio from env: ${ratio}% @ ${isoDate}`);
+    return { ratio, isoDate };
+  }
+
   // ── 台股融資靜態備援（TWSE API 完全失敗時的最終保底）──
-  // 每週手動更新一次即可（正常情況下不會用到，動態 API 已覆蓋）
   const TWM_FALLBACK = {
     maintenanceRatio: 156.27,      // 整戶融資維持率（%）← 7/14 實際值
     maintenanceRatioIsLive: false,
@@ -731,7 +746,7 @@ async function startServer() {
     }
   }
 
-  // 從 TWSE OpenAPI v1 取得融資股數（餘額、增減、融券等）
+  // 從 TWSE OpenAPI v1 MI_MARGN + TPEx OpenAPI 取得融資餘額、增減、融券（上市+上櫃合計）
   async function fetchMarginBalance(fetchWithTimeout: any): Promise<{
     marginBalance: number;
     marginDailyChange: number;
@@ -740,52 +755,78 @@ async function startServer() {
     balanceDate: string | null;
   } | null> {
     try {
-      const url = 'https://openapi.twse.com.tw/v1/exchangeReport/MI_MARGN';
-      const res = await fetchWithTimeout(url, 8000);
-      if (!res.ok) return null;
-
-      const raw: any[] = await res.json();
-      if (!Array.isArray(raw) || raw.length === 0) return null;
-
       const parseNum = (s: string | number) =>
         typeof s === 'number' ? s : parseFloat(String(s).replace(/,/g, '')) || 0;
 
-      // 關鍵修正：openapi MI_MARGN 只有個股資料，沒有合計列
-      // 必須對所有個股加總，才能得到全市場融資合計
+      // 並行取得上市 (TWSE) 與上櫃 (TPEx) 融資券資料
+      const twseUrl = 'https://openapi.twse.com.tw/v1/exchangeReport/MI_MARGN';
+      const tpexUrl = 'https://www.tpex.org.tw/openapi/v1/tpex_margin_bal';
+
+      const [twseRes, tpexRes] = await Promise.allSettled([
+        fetchWithTimeout(twseUrl, 8000),
+        fetchWithTimeout(tpexUrl, 8000),
+      ]);
+
       let totalMarginToday  = 0;
       let totalShortToday   = 0;
-      // 流量法：當日融資淨增減 = 買進 - 賣出 - 現金償還
-      // 不依賴 TodayBalance vs YesterdayBalance（兩者盤後前可能相等）
       let totalMarginBuy    = 0;
       let totalMarginSell   = 0;
       let totalMarginRepay  = 0;
       let latestDate: string | null = null;
 
-      for (const item of raw) {
-        // 融資餘額（取今日餘額，中/英文欄位名稱都嘗試）
-        totalMarginToday  += parseNum(item['融資今日餘額'] ?? item.MarginPurchaseTodayBalance ?? 0);
+      // 1. 處理上市 (TWSE)
+      if (twseRes.status === 'fulfilled' && twseRes.value.ok) {
+        try {
+          const raw: any[] = await twseRes.value.json();
+          if (Array.isArray(raw) && raw.length > 0) {
+            for (const item of raw) {
+              totalMarginToday += parseNum(item['融資今日餘額'] ?? item.MarginPurchaseTodayBalance ?? 0);
+              totalMarginBuy   += parseNum(item['融資買進'] ?? item.MarginPurchaseBuy ?? 0);
+              totalMarginSell  += parseNum(item['融資賣出'] ?? item.MarginPurchaseSell ?? 0);
+              totalMarginRepay += parseNum(
+                item['現金償還'] ?? item['融資現金償還'] ?? item.MarginPurchaseCashRepayment ?? 0
+              );
+              totalShortToday  += parseNum(item['融券今日餘額'] ?? item.ShortSaleTodayBalance ?? 0);
 
-        // 融資當日流量（用於計算淨增減，不受 Balance 更新時序影響）
-        totalMarginBuy    += parseNum(item['融資買進'] ?? item.MarginPurchaseBuy ?? 0);
-        totalMarginSell   += parseNum(item['融資賣出'] ?? item.MarginPurchaseSell ?? 0);
-        totalMarginRepay  += parseNum(
-          item['現金償還'] ?? item['融資現金償還'] ?? item.MarginPurchaseCashRepayment ?? 0
-        );
-
-        // 融券餘額
-        totalShortToday   += parseNum(item['融券今日餘額'] ?? item.ShortSaleTodayBalance ?? 0);
-
-        // 日期（所有列相同，取第一筆即可）
-        if (!latestDate) {
-          const d = item.Date || item['日期'];
-          if (d) latestDate = rocDateToIso(String(d));
+              if (!latestDate) {
+                const d = item.Date || item['日期'];
+                if (d) latestDate = rocDateToIso(String(d));
+              }
+            }
+          }
+        } catch (err: any) {
+          console.warn('[sentiment server] TWSE parse failed:', err.message);
         }
       }
 
-      // 合理性驗證
-      if (totalMarginToday < 100_000_000) {
-        console.warn('[sentiment server] MI_MARGN sum too small:', totalMarginToday,
-          '— API may have changed structure');
+      // 2. 處理上櫃 (TPEx)
+      if (tpexRes.status === 'fulfilled' && tpexRes.value.ok) {
+        try {
+          const rawTpex: any[] = await tpexRes.value.json();
+          if (Array.isArray(rawTpex) && rawTpex.length > 0) {
+            for (const item of rawTpex) {
+              totalMarginToday += parseNum(item['融資今日餘額'] ?? item.MarginPurchaseTodayBalance ?? item.TodayBalance ?? 0);
+              totalMarginBuy   += parseNum(item['融資買進'] ?? item.MarginPurchaseBuy ?? item.Buy ?? 0);
+              totalMarginSell  += parseNum(item['融資賣出'] ?? item.MarginPurchaseSell ?? item.Sell ?? 0);
+              totalMarginRepay += parseNum(
+                item['現金償還'] ?? item['融資現金償還'] ?? item.MarginPurchaseCashRepayment ?? item.CashRepayment ?? 0
+              );
+              totalShortToday  += parseNum(item['融券今日餘額'] ?? item.ShortSaleTodayBalance ?? item.ShortTodayBalance ?? 0);
+
+              if (!latestDate) {
+                const d = item.Date || item['日期'];
+                if (d) latestDate = rocDateToIso(String(d));
+              }
+            }
+          }
+        } catch (err: any) {
+          console.warn('[sentiment server] TPEx parse failed:', err.message);
+        }
+      }
+
+      if (totalMarginToday === 0) {
+        console.warn('[sentiment server] Total margin balance is 0 from both TWSE and TPEx');
+        return null;
       }
 
       // 當日淨融資增減 = 買進 - 賣出 - 現金償還（流量法）
@@ -799,7 +840,7 @@ async function startServer() {
         ? parseFloat((totalMarginToday / totalShortToday).toFixed(1))
         : null;
 
-      console.log('[sentiment server] MI_MARGN (萬張):', {
+      console.log('[sentiment server] Market Margin Total (上市+上櫃, 萬張):', {
         totalMarginToday,
         buy: totalMarginBuy, sell: totalMarginSell, repay: totalMarginRepay,
         netChange: totalMarginNetChange,
@@ -815,7 +856,7 @@ async function startServer() {
         balanceDate:       latestDate,
       };
     } catch (e: any) {
-      console.warn('[sentiment server] MI_MARGN fetch failed:', e.message);
+      console.warn('[sentiment server] Margin balance fetch failed:', e.message);
       return null;
     }
   }
@@ -840,22 +881,36 @@ async function startServer() {
     };
 
     try {
-      const candidates = getCandidateDates(6);
-      console.log('[sentiment server] TWSE RM candidates:', candidates);
+      // ── 0. 最高優先級：Vercel 環境變數精確覆寫 ──
+      const envRatio = getMaintenanceRatioFromEnv();
 
-      // ── 維持率：用 MI_MARGN + Yahoo Finance 動態計算 ──
-      // （TWSE FMTQIK 端點封鎖 Vercel IP，改用計算法）
-      let ratioResult: { ratio: number; isoDate: string } | null = null;
+      let ratioResult: { ratio: number; isoDate: string } | null = envRatio;
+      let ratioSource: 'env' | 'api' | 'fallback' = envRatio ? 'env' : 'fallback';
 
-      // 主要方案：動態計算（MI_MARGN 融資股數 × Yahoo Finance 股價）
-      ratioResult = await fetchMaintenanceRatioLatest(fetchWithTimeout);
-
-      // 備援：帶日期的 FMTQIK（若未來 TWSE 解除封鎖可自動恢復）
       if (!ratioResult) {
-        for (const dateStr of candidates) {
-          ratioResult = await fetchMaintenanceRatioForDate(dateStr, fetchWithTimeout);
-          if (ratioResult) break;
+        const candidates = getCandidateDates(6);
+        console.log('[sentiment server] TWSE RM candidates:', candidates);
+
+        // 主要方案：動態計算（MI_MARGN 融資股數 × Yahoo Finance 股價）
+        ratioResult = await fetchMaintenanceRatioLatest(fetchWithTimeout);
+        if (ratioResult) {
+          ratioSource = 'api';
         }
+
+        // 備援：帶日期的 FMTQIK（若未來 TWSE 解除封鎖可自動恢復）
+        if (!ratioResult) {
+          for (const dateStr of candidates) {
+            ratioResult = await fetchMaintenanceRatioForDate(dateStr, fetchWithTimeout);
+            if (ratioResult) {
+              ratioSource = 'api';
+              break;
+            }
+          }
+        }
+      }
+
+      if (ratioResult) {
+        console.log(`[sentiment server] TWSE ratio OK (${ratioSource}): ${ratioResult.ratio}% @ ${ratioResult.isoDate}`);
       }
 
       const balanceResult = await fetchMarginBalance(fetchWithTimeout);
@@ -868,6 +923,7 @@ async function startServer() {
       return {
         maintenanceRatio:       ratioResult?.ratio          ?? TWM_FALLBACK.maintenanceRatio,
         maintenanceRatioIsLive: ratioResult != null,
+        maintenanceRatioSource: ratioSource,
         maintenanceRatioDate:   ratioResult?.isoDate         ?? null,
 
         marginBalance:          balanceResult?.marginBalance      ?? TWM_FALLBACK.marginBalance,
@@ -1050,11 +1106,13 @@ async function startServer() {
     }
 
     const SERIES = {
-      NFP: 'PAYEMS',
-      ADP: 'ADPWNUSNERSA',
-      CPI: 'CPIAUCSL',
-      PPI: 'WPSFD49207',
+      NFP:    'PAYEMS',
+      ADP:    'ADPMNUSNERSA',
+      CPI:    'CPIAUCSL',
+      PPI:    'WPSFD49207',
       CORE_PPI: 'WPSFD4111',
+      SAHM:   'SAHMREALTIME',  // Real-time Sahm Rule Recession Indicator（百分點差值）
+      UNRATE: 'UNRATE',        // 美國失業率（季調，月度，%）
     };
 
     const PPI_FALLBACK = 'PPIFGS';
@@ -1275,20 +1333,31 @@ async function startServer() {
 
     try {
       const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
-      const [nfpResult, adpResult, cpiResult, ppiResult, corePpiResult, ppiFallbackResult, corePpiFallbackResult] = await Promise.allSettled([
+      const [nfpResult, adpResult, cpiResult, ppiResult, corePpiResult, ppiFallbackResult, corePpiFallbackResult, sahmResult, unrateResult] = await Promise.allSettled([
         fetchFred(SERIES.NFP, 6),
-        delay(200).then(() => fetchFred(SERIES.ADP, 6)),
+        delay(200).then(() => fetchFred(SERIES.ADP, 8)),
         delay(400).then(() => fetchFred(SERIES.CPI, 20)),
         delay(600).then(() => fetchFred(SERIES.PPI, 20)),
         delay(800).then(() => fetchFred(SERIES.CORE_PPI, 20)),
         delay(1000).then(() => fetchFred(PPI_FALLBACK, 20)),
         delay(1200).then(() => fetchFred(CORE_PPI_FALLBACK, 20)),
+        delay(1400).then(() => fetchFred(SERIES.SAHM, 4)),    // 取最新 4 筆（含趨勢）
+        delay(1600).then(() => fetchFred(SERIES.UNRATE, 4)),  // 取最新 4 筆
       ]);
 
       const safeGet = (r: PromiseSettledResult<any>) => r.status === 'fulfilled' ? r.value : null;
 
       const nfpData = safeGet(nfpResult);
-      const adpData = safeGet(adpResult);
+      let adpData = safeGet(adpResult);
+      // ADP 安全檢查：若資料不足 3 筆，嘗試補抓更多
+      if (!adpData || adpData.length < 3) {
+        console.warn(`[macro-server] ADP data insufficient (${adpData?.length ?? 0} obs), retrying with larger limit`);
+        try {
+          adpData = await fetchFred(SERIES.ADP, 12);
+        } catch (e: any) {
+          console.error(`[macro-server] ADP retry failed:`, e?.message);
+        }
+      }
       const cpiData = safeGet(cpiResult);
 
       const ppiMain = safeGet(ppiResult);
@@ -1300,6 +1369,9 @@ async function startServer() {
       const corePpiFallback = safeGet(corePpiFallbackResult);
       const corePpiIsMain = !!(corePpiMain && corePpiMain.length >= 14);
       const corePpiData = corePpiIsMain ? corePpiMain : corePpiFallback;
+
+      const sahmData   = safeGet(sahmResult);
+      const unrateData = safeGet(unrateResult);
 
       console.log('[macro-server] Series used:', {
         ppi: ppiIsMain ? SERIES.PPI : PPI_FALLBACK,
@@ -1425,7 +1497,63 @@ async function startServer() {
           dataDate: corePpiData?.[0]?.date ?? null,
           dataSource: corePpiIsMain ? SERIES.CORE_PPI : CORE_PPI_FALLBACK,
           lastUpdated: new Date().toISOString()
-        }
+        },
+        sahm: (() => {
+          // SAHMREALTIME 恆 >= 0（定義：Max(0, 當前3個月MA - 過去12個月最低3個月MA)）
+          // 但 FRED real-time 版本偶有浮動誤差產生極小負值，故強制非負
+          //
+          // fetchFred 使用 sort_order=desc，故 [0]=最新、[1]=前一月
+          // 雙保險：同時嘗試 [最後一筆] 和 [0]，取較新的有效值
+          const latestIdx    = sahmData != null ? sahmData.length - 1 : -1;
+          const rawCurrent   = sahmData?.[latestIdx]?.value  ?? sahmData?.[0]?.value  ?? null;
+          const rawPrev      = sahmData != null
+            ? (sahmData.length >= 2 ? sahmData[latestIdx - 1]?.value ?? sahmData[1]?.value : null)
+            : null;
+          const currentDate  = sahmData?.[latestIdx]?.date ?? sahmData?.[0]?.date ?? null;
+
+          // 強制非負（SAHMREALTIME 數學定義恆 >= 0，負值是 FRED 資料浮動誤差）
+          const currentVal = rawCurrent != null ? Math.max(0, rawCurrent) : null;
+          const prevVal    = rawPrev    != null ? Math.max(0, rawPrev)    : null;
+
+          // 失業率（同樣取最新）
+          const urLatestIdx = unrateData != null ? unrateData.length - 1 : -1;
+          const unrate      = unrateData?.[urLatestIdx]?.value ?? unrateData?.[0]?.value ?? null;
+          const unrateDate  = unrateData?.[urLatestIdx]?.date  ?? unrateData?.[0]?.date  ?? null;
+          const unratePrev  = unrateData != null && unrateData.length >= 2
+            ? (unrateData[urLatestIdx - 1]?.value ?? unrateData[1]?.value ?? null)
+            : null;
+
+          // 觸發判斷（非負值後才判斷）
+          let signal: 'triggered' | 'warning' | 'safe' | null = null;
+          if (currentVal != null) {
+            if (currentVal >= 0.5)      signal = 'triggered';
+            else if (currentVal >= 0.3) signal = 'warning';
+            else                        signal = 'safe';
+          }
+
+          // 月趨勢：正值=惡化，負值=改善
+          const trend = (currentVal != null && prevVal != null)
+            ? parseFloat((currentVal - prevVal).toFixed(2))
+            : null;
+
+          // 失業率趨勢：正值=上升（負面），負值=下降（正面）
+          const unrateTrend = (unrate != null && unratePrev != null)
+            ? parseFloat((unrate - unratePrev).toFixed(1))
+            : null;
+
+          return {
+            sahmValue:    currentVal  != null ? parseFloat(currentVal.toFixed(2))  : null,
+            sahmPrev:     prevVal     != null ? parseFloat(prevVal.toFixed(2))     : null,
+            sahmDate:     currentDate,
+            sahmTrend:    trend,
+            signal,
+            unrate:       unrate      != null ? parseFloat(unrate.toFixed(1))      : null,
+            unratePrev:   unratePrev  != null ? parseFloat(unratePrev.toFixed(1))  : null,
+            unrateTrend,   // 新增：正=上升(惡化)，負=下降(改善)
+            unrateDate,
+            isLive: sahmData != null,
+          };
+        })(),
       };
 
       console.log('[macro-server] Data status:', {
