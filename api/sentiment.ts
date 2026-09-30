@@ -4,6 +4,84 @@ import { yahooFinance } from './_helpers.js';
 
 const CNN_URL = 'https://production.dataviz.cnn.io/index/fearandgreed/graphdata';
 
+/**
+ * FinMind API 設定（免費，用於自動抓取台股大盤融資維持率）
+ * 申請步驟：
+ *   1. 前往 https://finmindtrade.com/ 註冊帳號（免費）
+ *   2. 登入後在會員中心取得 API Token
+ *   3. 在 Vercel Dashboard > Settings > Environment Variables 新增：
+ *        FINMIND_API_TOKEN = <你的 token>
+ *   免費額度：600 次/小時，遠超本專案每日呼叫量，不需付費升級。
+ * 資料集：TaiwanTotalExchangeMarginMaintenance（台灣大盤融資維持率）
+ * 文件：https://finmind.github.io/tutor/TaiwanMarket/Chip/
+ */
+const FINMIND_API_TOKEN = process.env.FINMIND_API_TOKEN ?? '';
+
+async function fetchMaintenanceRatioFromFinMind(): Promise<{ ratio: number; isoDate: string } | null> {
+  try {
+    const today = new Date();
+    const startDate = new Date(today.getTime() - 10 * 86400000).toISOString().slice(0, 10); // 抓近10天，確保有交易日資料
+    const url = `https://api.finmindtrade.com/api/v4/data?dataset=TaiwanTotalExchangeMarginMaintenance&start_date=${startDate}${FINMIND_API_TOKEN ? `&token=${FINMIND_API_TOKEN}` : ''}`;
+
+    const headers: Record<string, string> = { Accept: 'application/json' };
+    if (FINMIND_API_TOKEN) {
+      headers['Authorization'] = `Bearer ${FINMIND_API_TOKEN}`;
+    }
+
+    const res = await fetchWithTimeout(url, { headers }, 8000);
+    if (!res.ok) return null;
+
+    const json: any = await res.json();
+    if (json?.status !== 200 || !Array.isArray(json?.data) || json.data.length === 0) {
+      return null;
+    }
+
+    const parseNum = (s: any) =>
+      typeof s === 'number' ? s : parseFloat(String(s).replace(/,/g, ''));
+
+    // 取最新一筆交易日資料
+    const latest = json.data[json.data.length - 1];
+    if (!latest) return null;
+
+    let ratio: number | null = null;
+    // 優先搜尋可能的維持率欄位名（MarginMaintenanceRatio / margin_maintenance_ratio / MaintenanceRatio / ratio / 維持率）
+    for (const key of Object.keys(latest)) {
+      const kLower = key.toLowerCase();
+      if (kLower.includes('ratio') || kLower.includes('維持率') || kLower.includes('maintenance')) {
+        const val = parseNum(latest[key]);
+        if (!isNaN(val) && val >= 50 && val <= 500) {
+          ratio = val;
+          break;
+        }
+      }
+    }
+
+    if (ratio == null) {
+      ratio = extractMaintenanceRatio(latest);
+    }
+
+    if (ratio == null) {
+      for (const [k, v] of Object.entries(latest)) {
+        if (k === 'date') continue;
+        const n = parseNum(v);
+        if (!isNaN(n) && n >= 50 && n <= 500) {
+          ratio = n;
+          break;
+        }
+      }
+    }
+
+    if (ratio == null) return null;
+
+    const isoDate = latest.date || new Date().toISOString().slice(0, 10);
+    console.log(`[sentiment] FinMind maintenance ratio OK: ${ratio}% @ ${isoDate}`);
+    return { ratio, isoDate };
+  } catch (e) {
+    console.warn('[sentiment] FinMind maintenance ratio fetch failed:', (e as Error).message);
+    return null;
+  }
+}
+
 // ── Vercel 環境變數精確維持率（最高優先，0誤差）──────────────────────────
 // 設定方式：Vercel Dashboard → Settings → Environment Variables
 //   TWSE_MAINTENANCE_RATIO = 194.0        （當日整戶融資維持率，%）
@@ -274,7 +352,7 @@ async function fetchMarginBalance(): Promise<{
 
     // 並行取得上市 (TWSE) 與上櫃 (TPEx) 融資券資料
     const twseUrl = 'https://openapi.twse.com.tw/v1/exchangeReport/MI_MARGN';
-    const tpexUrl = 'https://www.tpex.org.tw/openapi/v1/tpex_margin_bal';
+    const tpexUrl = 'https://www.tpex.org.tw/openapi/v1/tpex_mainboard_margin_balance';
 
     const [twseRes, tpexRes] = await Promise.allSettled([
       fetchWithTimeout(twseUrl, { headers: { Accept: 'application/json' } }, 8000),
@@ -291,20 +369,23 @@ async function fetchMarginBalance(): Promise<{
     // 1. 處理上市 (TWSE)
     if (twseRes.status === 'fulfilled' && twseRes.value.ok) {
       try {
-        const raw: any[] = await twseRes.value.json();
-        if (Array.isArray(raw) && raw.length > 0) {
-          for (const item of raw) {
-            totalMarginToday += parseNum(item['融資今日餘額'] ?? item.MarginPurchaseTodayBalance ?? 0);
-            totalMarginBuy   += parseNum(item['融資買進'] ?? item.MarginPurchaseBuy ?? 0);
-            totalMarginSell  += parseNum(item['融資賣出'] ?? item.MarginPurchaseSell ?? 0);
-            totalMarginRepay += parseNum(
-              item['現金償還'] ?? item['融資現金償還'] ?? item.MarginPurchaseCashRepayment ?? 0
-            );
-            totalShortToday  += parseNum(item['融券今日餘額'] ?? item.ShortSaleTodayBalance ?? 0);
+        const text = await twseRes.value.text();
+        if (text && (text.trim().startsWith('[') || text.trim().startsWith('{'))) {
+          const raw: any[] = JSON.parse(text);
+          if (Array.isArray(raw) && raw.length > 0) {
+            for (const item of raw) {
+              totalMarginToday += parseNum(item['融資今日餘額'] ?? item.MarginPurchaseTodayBalance ?? item.MarginPurchaseBalance ?? 0);
+              totalMarginBuy   += parseNum(item['融資買進'] ?? item.MarginPurchaseBuy ?? item.MarginPurchase ?? 0);
+              totalMarginSell  += parseNum(item['融資賣出'] ?? item.MarginPurchaseSell ?? item.MarginSales ?? 0);
+              totalMarginRepay += parseNum(
+                item['現金償還'] ?? item['融資現金償還'] ?? item.CashRedemption ?? item.MarginPurchaseCashRepayment ?? 0
+              );
+              totalShortToday  += parseNum(item['融券今日餘額'] ?? item.ShortSaleTodayBalance ?? item.ShortSaleBalance ?? 0);
 
-            if (!latestDate) {
-              const d = item.Date || item['日期'];
-              if (d) latestDate = rocDateToIso(String(d));
+              if (!latestDate) {
+                const d = item.Date || item['日期'];
+                if (d) latestDate = rocDateToIso(String(d));
+              }
             }
           }
         }
@@ -316,22 +397,27 @@ async function fetchMarginBalance(): Promise<{
     // 2. 處理上櫃 (TPEx)
     if (tpexRes.status === 'fulfilled' && tpexRes.value.ok) {
       try {
-        const rawTpex: any[] = await tpexRes.value.json();
-        if (Array.isArray(rawTpex) && rawTpex.length > 0) {
-          for (const item of rawTpex) {
-            totalMarginToday += parseNum(item['融資今日餘額'] ?? item.MarginPurchaseTodayBalance ?? item.TodayBalance ?? 0);
-            totalMarginBuy   += parseNum(item['融資買進'] ?? item.MarginPurchaseBuy ?? item.Buy ?? 0);
-            totalMarginSell  += parseNum(item['融資賣出'] ?? item.MarginPurchaseSell ?? item.Sell ?? 0);
-            totalMarginRepay += parseNum(
-              item['現金償還'] ?? item['融資現金償還'] ?? item.MarginPurchaseCashRepayment ?? item.CashRepayment ?? 0
-            );
-            totalShortToday  += parseNum(item['融券今日餘額'] ?? item.ShortSaleTodayBalance ?? item.ShortTodayBalance ?? 0);
+        const text = await tpexRes.value.text();
+        if (text && (text.trim().startsWith('[') || text.trim().startsWith('{'))) {
+          const rawTpex: any[] = JSON.parse(text);
+          if (Array.isArray(rawTpex) && rawTpex.length > 0) {
+            for (const item of rawTpex) {
+              totalMarginToday += parseNum(item.MarginPurchaseBalance ?? item['融資今日餘額'] ?? item.MarginPurchaseTodayBalance ?? item.TodayBalance ?? 0);
+              totalMarginBuy   += parseNum(item.MarginPurchase ?? item['融資買進'] ?? item.MarginPurchaseBuy ?? item.Buy ?? 0);
+              totalMarginSell  += parseNum(item.MarginSales ?? item['融資賣出'] ?? item.MarginPurchaseSell ?? item.Sell ?? 0);
+              totalMarginRepay += parseNum(
+                item.CashRedemption ?? item['現金償還'] ?? item['融資現金償還'] ?? item.MarginPurchaseCashRepayment ?? item.CashRepayment ?? 0
+              );
+              totalShortToday  += parseNum(item.ShortSaleBalance ?? item['融券今日餘額'] ?? item.ShortSaleTodayBalance ?? item.ShortTodayBalance ?? 0);
 
-            if (!latestDate) {
-              const d = item.Date || item['日期'];
-              if (d) latestDate = rocDateToIso(String(d));
+              if (!latestDate) {
+                const d = item.Date || item['日期'];
+                if (d) latestDate = rocDateToIso(String(d));
+              }
             }
           }
+        } else {
+          console.warn('[sentiment] TPEx response is not valid JSON');
         }
       } catch (err: any) {
         console.warn('[sentiment] TPEx parse failed:', err.message);
@@ -378,11 +464,18 @@ async function fetchMarginBalance(): Promise<{
 // 主函數：並行取得維持率（帶日期回溯）+ 融資股數
 async function fetchTwseMarginData() {
   try {
-    // ── 0. 最高優先級：Vercel 環境變數精確覆寫 ──
-    const envRatio = getMaintenanceRatioFromEnv();
+    // ── 0. 第一優先：FinMind 官方大盤融資維持率（自動化）──
+    let ratioResult: { ratio: number; isoDate: string } | null = await fetchMaintenanceRatioFromFinMind();
+    let ratioSource: 'finmind' | 'env' | 'api' | 'fallback' = ratioResult ? 'finmind' : 'fallback';
 
-    let ratioResult: { ratio: number; isoDate: string } | null = envRatio;
-    let ratioSource: 'env' | 'api' | 'fallback' = envRatio ? 'env' : 'fallback';
+    // ── 0.5. 備援或手動覆寫：若環境變數 TWSE_MAINTENANCE_RATIO 有值 ──
+    if (!ratioResult) {
+      const envRatio = getMaintenanceRatioFromEnv();
+      if (envRatio) {
+        ratioResult = envRatio;
+        ratioSource = 'env';
+      }
+    }
 
     if (!ratioResult) {
       const candidates = getCandidateDates(6);

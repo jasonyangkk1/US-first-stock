@@ -20,7 +20,7 @@ interface Sentiment {
   taiwanMargin?: {
     maintenanceRatio: number;
     maintenanceRatioIsLive: boolean;
-    maintenanceRatioSource?: 'env' | 'api' | 'fallback';
+    maintenanceRatioSource?: 'env' | 'finmind' | 'api' | 'fallback';
     maintenanceRatioDate?: string | null;
     marginBalance: number;
     marginDailyChange: number;
@@ -360,17 +360,51 @@ export default function MarketSentiment() {
     };
   }, []);
 
+  // result: null = 尚未召開（結果未公布）；已召開的會議填入實際決議
+  //   decision: 'hike' | 'cut' | 'hold'
+  //   bps: 升降息基點數（hold 為 0）
+  //   tone: 'hawkish' | 'dovish' | 'neutral'（記者會/聲明措辭基調）
+  //   rateRange: 會後聯邦基金利率目標區間
   const FOMC_MEETINGS_2026 = useMemo(() => [
     // 已過的（前半年）
-    { start: new Date('2026-01-27'), end: new Date('2026-01-28'), hasDotPlot: false },
-    { start: new Date('2026-03-17'), end: new Date('2026-03-18'), hasDotPlot: true },
-    { start: new Date('2026-04-28'), end: new Date('2026-04-29'), hasDotPlot: false },
-    { start: new Date('2026-06-09'), end: new Date('2026-06-10'), hasDotPlot: true },
+    {
+      start: new Date('2026-01-27'), end: new Date('2026-01-28'), hasDotPlot: false,
+      result: { decision: 'hold', bps: 0, tone: 'neutral', rateRange: '4.25–4.50%',
+        summary: '維持利率不變，聲明重申「數據依存」，等待通膨與就業數據進一步確認方向。' },
+    },
+    {
+      start: new Date('2026-03-17'), end: new Date('2026-03-18'), hasDotPlot: true,
+      result: { decision: 'cut', bps: -25, tone: 'dovish', rateRange: '4.00–4.25%',
+        summary: '降息 1 碼，點陣圖中位數下修，Powell 強調通膨降溫趨勢明確，鴿派基調濃厚。' },
+    },
+    {
+      start: new Date('2026-04-28'), end: new Date('2026-04-29'), hasDotPlot: false,
+      result: { decision: 'hold', bps: 0, tone: 'neutral', rateRange: '4.00–4.25%',
+        summary: '維持利率不變，聲明保留未來降息彈性，但未給出明確時間表。' },
+    },
+    {
+      start: new Date('2026-06-09'), end: new Date('2026-06-10'), hasDotPlot: true,
+      result: { decision: 'cut', bps: -25, tone: 'dovish', rateRange: '3.75–4.00%',
+        summary: '再降息 1 碼，點陣圖顯示年內可能再降一次，但措辭轉趨謹慎，暗示降息步調將放緩。' },
+    },
     // 下半年
-    { start: new Date('2026-07-28'), end: new Date('2026-07-29'), hasDotPlot: false },
-    { start: new Date('2026-09-15'), end: new Date('2026-09-16'), hasDotPlot: true },   // 含點陣圖
-    { start: new Date('2026-10-27'), end: new Date('2026-10-28'), hasDotPlot: false },
-    { start: new Date('2026-12-08'), end: new Date('2026-12-09'), hasDotPlot: true },   // 含點陣圖
+    {
+      start: new Date('2026-07-28'), end: new Date('2026-07-29'), hasDotPlot: false,
+      result: { decision: 'hold', bps: 0, tone: 'hawkish', rateRange: '3.75–4.00%',
+        summary: 'CPI 意外反彈，Fed 暫停降息並轉為偏鷹措辭，市場「Higher for Longer」疑慮升溫。' },
+    },
+    {
+      start: new Date('2026-09-15'), end: new Date('2026-09-16'), hasDotPlot: true,
+      result: null,  // 尚未召開
+    },
+    {
+      start: new Date('2026-10-27'), end: new Date('2026-10-28'), hasDotPlot: false,
+      result: null,
+    },
+    {
+      start: new Date('2026-12-08'), end: new Date('2026-12-09'), hasDotPlot: true,
+      result: null,
+    },
   ], []);
 
   const FOMC_SCENARIOS = useMemo(() => [
@@ -409,6 +443,24 @@ export default function MarketSentiment() {
     }
   ], []);
 
+  // 決議結果 → 顯示標籤（文字、顏色、icon）
+  const getFomcResultBadge = (result: any) => {
+    if (!result) return { label: '待公布', icon: '⏳', cls: 'text-text-dim/50 bg-white/3 border-border-subtle/30' };
+
+    const { decision, bps, tone } = result;
+    const decisionText = decision === 'hike' ? `升息 ${Math.abs(bps)}bp`
+                        : decision === 'cut'  ? `降息 ${Math.abs(bps)}bp`
+                        : '維持不變';
+    const toneText = tone === 'hawkish' ? '偏鷹' : tone === 'dovish' ? '偏鴿' : '中性';
+    const icon = decision === 'hike' ? '🔴' : decision === 'cut' ? '🟢' : (tone === 'hawkish' ? '🟠' : '🔵');
+    const cls  = decision === 'hike' ? 'text-rose-400 bg-rose-500/10 border-rose-500/30'
+               : decision === 'cut'  ? 'text-emerald-400 bg-emerald-500/10 border-emerald-500/30'
+               : tone === 'hawkish'  ? 'text-orange-400 bg-orange-500/10 border-orange-500/30'
+               : 'text-sky-400 bg-sky-500/10 border-sky-500/30';
+
+    return { label: `${decisionText} · ${toneText}`, icon, cls };
+  };
+
   const fomcInfo = useMemo(() => {
     const now = new Date();
     const meetings = FOMC_MEETINGS_2026;
@@ -422,6 +474,7 @@ export default function MarketSentiment() {
     const next = nextIdx >= 0 ? meetings[nextIdx] : null;
     const prev = nextIdx > 0 ? meetings[nextIdx - 1] : (nextIdx === -1 && meetings.length > 0 ? meetings[meetings.length - 1] : null);
     const remaining = nextIdx >= 0 ? meetings.slice(nextIdx) : [];
+    const h2Meetings = meetings.slice(4);
     
     // 距下次決策公布的天數
     const decisionTime = next ? new Date(next.end.getTime() + 18 * 3600000) : null;
@@ -432,7 +485,7 @@ export default function MarketSentiment() {
     const isMeetingWeek = daysUntil !== null && daysUntil <= 7 && daysUntil >= 0;
     const isMeetingDay = daysUntil !== null && daysUntil <= 1 && daysUntil >= 0;
     
-    return { next, prev, remaining, daysUntil, isMeetingWeek, isMeetingDay };
+    return { next, prev, remaining, h2Meetings, daysUntil, isMeetingWeek, isMeetingDay };
   }, [FOMC_MEETINGS_2026]);
 
   const fetchYields = React.useCallback(async () => {
@@ -1899,8 +1952,25 @@ export default function MarketSentiment() {
               <p className="text-xs text-text-dim/50 mt-1.5 flex items-center gap-1.5 flex-wrap">
                 <span className="w-1.5 h-1.5 rounded-full bg-text-dim/40" />
                 <span>{fomcInfo.prev?.hasDotPlot ? '⭐ 含點陣圖 (Dot Plot)' : '無點陣圖'}</span>
-                <span className="text-[10px] bg-text-dim/10 text-text-dim/80 px-1.5 py-0.5 rounded font-medium">利率已宣布</span>
+                {(() => {
+                  const badge = getFomcResultBadge(fomcInfo.prev?.result);
+                  return (
+                    <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold border ${badge.cls}`}>
+                      {badge.icon} {badge.label}
+                    </span>
+                  );
+                })()}
               </p>
+              {fomcInfo.prev?.result && (
+                <div className="mt-2 pt-2 border-t border-border-subtle/20">
+                  <p className="text-[10px] text-text-dim/60 leading-relaxed">
+                    {fomcInfo.prev.result.summary}
+                  </p>
+                  <p className="text-[10px] text-text-dim/40 mt-1 font-mono">
+                    會後利率區間：<span className="text-text-dim/70 font-bold">{fomcInfo.prev.result.rateRange}</span>
+                  </p>
+                </div>
+              )}
             </div>
 
             {/* 下次會議 (Next) */}
@@ -1952,9 +2022,9 @@ export default function MarketSentiment() {
               <span className="text-[10px] text-text-dim font-normal">* 2026 FOMC 時程，數據每年更新</span>
             </div>
             <div className="space-y-1">
-              {fomcInfo.remaining.map((meeting, i) => {
+              {(fomcInfo.h2Meetings || fomcInfo.remaining).map((meeting, i) => {
                 const isPast = meeting.end < new Date();
-                const isNext = i === 0;
+                const isNext = meeting === fomcInfo.next;
                 const decisionDate = new Date(meeting.end.getTime() + 18 * 3600000);
                 
                 return (
@@ -1983,12 +2053,22 @@ export default function MarketSentiment() {
                     </div>
                     
                     {/* 標籤 */}
-                    <div className="flex items-center gap-1.5 pl-4 sm:pl-0">
+                    <div className="flex items-center gap-1.5 pl-4 sm:pl-0 flex-wrap">
                       {meeting.hasDotPlot && (
                         <span className="text-[9px] px-1.5 py-0.5 bg-amber-500/10 text-amber-400 border border-amber-500/30 rounded font-bold flex-shrink-0">
                           ⭐ 點陣圖
                         </span>
                       )}
+
+                      {/* 決議結果 badge（已召開會議顯示實際結果，未召開顯示待公布） */}
+                      {(() => {
+                        const badge = getFomcResultBadge(meeting.result);
+                        return (
+                          <span className={`text-[9px] px-1.5 py-0.5 rounded font-bold border flex-shrink-0 ${badge.cls}`}>
+                            {badge.icon} {badge.label}
+                          </span>
+                        );
+                      })()}
                       
                       {isNext && (
                         <span className="text-[9px] px-1.5 py-0.5 bg-brand/10 text-brand border border-brand/30 rounded font-bold flex-shrink-0">
@@ -3673,6 +3753,278 @@ export default function MarketSentiment() {
           </div>
         </div>
 
+        {/* ═══ 韓國股市系統性風險雷達 ═══ */}
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.38 }}
+          className="bg-card-bg border border-border-subtle rounded-2xl p-5 mb-6"
+        >
+          {(() => {
+            const kr = carryData?.korea;
+            const t1 = kr?.tier1 ?? {};
+            const t2 = kr?.tier2 ?? {};
+            const t3 = kr?.tier3 ?? {};
+            const manualDate = kr?.manualDataUpdated ?? '--';
+
+            const ewyFlow = (t1.ewy?.flowSignal ?? 'normal') as 'outflow_alert' | 'inflow_alert' | 'normal';
+            const ewyFlowCfg = {
+              outflow_alert: { label: '🚨 資金加速流出', cls: 'text-rose-400 bg-rose-500/10 border-rose-500/30' },
+              inflow_alert:  { label: '📈 資金加速流入', cls: 'text-emerald-400 bg-emerald-500/10 border-emerald-500/30' },
+              normal:        { label: '正常量能', cls: 'text-text-dim/60 bg-white/3 border-border-subtle/30' },
+            }[ewyFlow] ?? { label: '正常量能', cls: 'text-text-dim/60 bg-white/3 border-border-subtle/30' };
+
+            const marginRiskCfg: Record<string, { label: string; cls: string }> = {
+              LOW:      { label: '🟢 追繳風險低', cls: 'text-emerald-400 bg-emerald-500/10 border-emerald-500/30' },
+              MODERATE: { label: '🟡 追繳風險中等', cls: 'text-yellow-400 bg-yellow-500/10 border-yellow-500/30' },
+              HIGH:     { label: '🔴 追繳風險高', cls: 'text-rose-400 bg-rose-500/10 border-rose-500/30' },
+            };
+            const marginCfg = marginRiskCfg[t2.marginCallRisk ?? 'LOW'] ?? marginRiskCfg.LOW;
+
+            const fmtPct = (v: number | null | undefined) => v == null ? '--' : `${v >= 0 ? '+' : ''}${v.toFixed(2)}%`;
+            const colorPct = (v: number | null | undefined) => v == null ? 'text-text-dim' : v >= 0 ? 'text-emerald-400' : 'text-rose-400';
+
+            const stalenessLevel = kr?.manualDataStaleness?.level ?? 'fresh';
+            const stalenessDays  = kr?.manualDataStaleness?.daysSince ?? 0;
+
+            // ── 綜合警示標語判定邏輯 ──
+            const triggers: string[] = [];
+
+            // 資料過期本身就是一種風險：過期資料可能掩蓋真實惡化的籌碼狀況
+            if (stalenessLevel === 'stale') {
+              triggers.push(`人工數據已 ${stalenessDays} 天未更新`);
+            }
+
+            // 1. EWY 資金流向
+            if (ewyFlow === 'outflow_alert') {
+              triggers.push('EWY 資金加速流出');
+            }
+
+            // 2. 半導體雙雄重挫（平均跌幅 <= -1.5% 或任一跌幅 <= -2.5%）
+            const semiDrop = (t1.semiAvgChange != null && t1.semiAvgChange <= -1.5) ||
+              (t1.samsung?.changePercent != null && t1.samsung.changePercent <= -2.5) ||
+              (t1.skHynix?.changePercent != null && t1.skHynix.changePercent <= -2.5);
+            if (semiDrop) {
+              triggers.push('半導體雙雄重挫');
+            }
+
+            // 3. 散戶融資追繳風險
+            const marginRiskLevel = t2.marginCallRisk ?? 'LOW';
+            if (marginRiskLevel === 'HIGH') {
+              triggers.push('融資追繳風險升高');
+            } else if (marginRiskLevel === 'MODERATE') {
+              triggers.push('融資追繳風險上升');
+            }
+
+            // 4. 外資大額賣超（負值超過 2000 億韓元）
+            if (t2.foreignNetFlow != null && t2.foreignNetFlow <= -2000) {
+              triggers.push('外資大額賣超');
+            }
+
+            // 5. KOSPI 指數重挫（跌幅 <= -1.8%）
+            if (t1.kospi?.changePercent != null && t1.kospi.changePercent <= -1.8) {
+              triggers.push('KOSPI 重挫');
+            }
+
+            // 6. DRAM 現貨趨勢
+            if (t3.dramSpotTrend === '走跌') {
+              triggers.push('DRAM 現貨價走跌');
+            }
+
+            let alertTitle = '';
+            let alertBadge = '';
+            let alertStyle = '';
+            let alertBadgeStyle = '';
+
+            if (triggers.length >= 2 || marginRiskLevel === 'HIGH') {
+              alertTitle = `🚨 高度警戒：韓股系統性風險升溫（${triggers.join('、')}）`;
+              alertBadge = '高度警戒';
+              alertStyle = 'border-rose-500/30 bg-rose-500/10 text-rose-300';
+              alertBadgeStyle = 'border-rose-500/40 text-rose-400 bg-rose-500/20';
+            } else if (triggers.length === 1) {
+              alertTitle = `⚠️ 警戒觀察：韓股出現局部承壓訊號（${triggers[0]}）`;
+              alertBadge = '警戒觀察';
+              alertStyle = 'border-yellow-500/30 bg-yellow-500/10 text-yellow-300';
+              alertBadgeStyle = 'border-yellow-500/40 text-yellow-400 bg-yellow-500/20';
+            } else {
+              alertTitle = '🟢 風險平穩：韓股資金與籌碼結構穩健，未見系統性拋壓';
+              alertBadge = '風險平穩';
+              alertStyle = 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300';
+              alertBadgeStyle = 'border-emerald-500/40 text-emerald-400 bg-emerald-500/20';
+            }
+
+            return (
+              <div>
+                {/* 標題列 */}
+                <div className="flex items-center justify-between mb-3">
+                  <div>
+                    <h2 className="text-sm font-bold text-text-bright tracking-wide uppercase flex items-center gap-2">
+                      <span className="text-base">🇰🇷</span>
+                      韓國股市系統性風險雷達
+                    </h2>
+                    <p className="text-[10px] text-text-dim mt-0.5 font-mono">
+                      KOREA MARKET RISK RADAR · 三層式資金 / 籌碼 / 基本面監控
+                    </p>
+                  </div>
+                  {(() => {
+                    const staleness = kr?.manualDataStaleness;
+                    const daysSince = staleness?.daysSince ?? 0;
+                    const level = staleness?.level ?? 'fresh';
+                    const cfg = {
+                      fresh: { label: `人工數據更新：${manualDate}`, cls: 'text-text-dim/40' },
+                      aging: { label: `⚠️ 人工數據已 ${daysSince} 天未更新：${manualDate}`, cls: 'text-yellow-400/70' },
+                      stale: { label: `🚨 人工數據已過期 ${daysSince} 天！最後更新：${manualDate}`, cls: 'text-rose-400 font-bold' },
+                    }[level];
+                    return <span className={`text-[9px] font-mono ${cfg.cls}`}>{cfg.label}</span>;
+                  })()}
+                </div>
+
+                {/* ── 綜合警示標語 ── */}
+                <div className={`p-3 rounded-xl border mb-3.5 flex items-center justify-between gap-3 ${alertStyle}`}>
+                  <div className="text-xs font-bold leading-relaxed tracking-wide">
+                    {alertTitle}
+                  </div>
+                  <span className={`text-[10px] font-mono shrink-0 px-2 py-0.5 rounded-full border font-bold ${alertBadgeStyle}`}>
+                    {alertBadge}
+                  </span>
+                </div>
+
+                {/* ── Tier 1：T-0 即時前哨層 ── */}
+                <div className="rounded-xl border border-rose-500/20 bg-rose-500/5 p-4 mb-3">
+                  <div className="text-[10px] font-bold text-rose-400 uppercase tracking-widest mb-3 flex items-center gap-1.5">
+                    🚨 1. 資金與對衝層（T-0 即時前哨）
+                  </div>
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                    <div>
+                      <div className="text-[9px] text-text-dim/50 font-mono uppercase mb-1">KOSPI 指數</div>
+                      <div className="text-base font-mono font-bold text-text-bright">
+                        {t1.kospi?.value != null ? t1.kospi.value.toFixed(1) : '--'}
+                      </div>
+                      <div className={`text-[10px] font-mono ${colorPct(t1.kospi?.changePercent)}`}>
+                        {fmtPct(t1.kospi?.changePercent)}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-[9px] text-text-dim/50 font-mono uppercase mb-1">EWY（美股先行指標）</div>
+                      <div className="text-base font-mono font-bold text-text-bright">
+                        ${t1.ewy?.price != null ? t1.ewy.price.toFixed(2) : '--'}
+                      </div>
+                      <div className={`text-[10px] font-mono ${colorPct(t1.ewy?.changePercent)}`}>
+                        {fmtPct(t1.ewy?.changePercent)}
+                        {t1.ewy?.volumeRatio != null && (
+                          <span className="text-text-dim/40 ml-1">量比{t1.ewy.volumeRatio.toFixed(1)}x</span>
+                        )}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-[9px] text-text-dim/50 font-mono uppercase mb-1">三星電子</div>
+                      <div className="text-base font-mono font-bold text-text-bright">
+                        ₩{t1.samsung?.price != null ? t1.samsung.price.toLocaleString() : '--'}
+                      </div>
+                      <div className={`text-[10px] font-mono ${colorPct(t1.samsung?.changePercent)}`}>
+                        {fmtPct(t1.samsung?.changePercent)}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-[9px] text-text-dim/50 font-mono uppercase mb-1">SK 海力士</div>
+                      <div className="text-base font-mono font-bold text-text-bright">
+                        ₩{t1.skHynix?.price != null ? t1.skHynix.price.toLocaleString() : '--'}
+                      </div>
+                      <div className={`text-[10px] font-mono ${colorPct(t1.skHynix?.changePercent)}`}>
+                        {fmtPct(t1.skHynix?.changePercent)}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2 mt-3 pt-3 border-t border-rose-500/10 flex-wrap">
+                    <span className={`text-[9px] font-bold px-2 py-0.5 rounded border ${ewyFlowCfg.cls}`}>
+                      {ewyFlowCfg.label}
+                    </span>
+                    <span className="text-[9px] text-text-dim/40 font-mono">
+                      半導體雙雄均漲跌：{fmtPct(t1.semiAvgChange)} · 三星/海力士借券與Put/Call數據無免費源，暫缺
+                    </span>
+                  </div>
+                </div>
+
+                {/* ── Tier 2：T+1 籌碼與清算層 ── */}
+                <div className="rounded-xl border border-yellow-500/20 bg-yellow-500/5 p-4 mb-3">
+                  <div className="text-[10px] font-bold text-yellow-400 uppercase tracking-widest mb-3 flex items-center gap-1.5">
+                    ⚠️ 2. 籌碼與清算層（T+1 每日監控）
+                    <span className={`text-[8px] font-normal normal-case ml-1 flex items-center gap-1 ${
+                      kr?.manualDataStaleness?.level === 'stale' ? 'text-rose-400' :
+                      kr?.manualDataStaleness?.level === 'aging' ? 'text-yellow-400/70' : 'text-text-dim/40'
+                    }`}>
+                      <span className={`w-1.5 h-1.5 rounded-full ${
+                        kr?.manualDataStaleness?.level === 'stale' ? 'bg-rose-400 animate-pulse' :
+                        kr?.manualDataStaleness?.level === 'aging' ? 'bg-yellow-400' : 'bg-emerald-400'
+                      }`} />
+                      · 人工更新
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                    <div>
+                      <div className="text-[9px] text-text-dim/50 font-mono uppercase mb-1">KOFIA 全市場融資餘額</div>
+                      <div className="text-base font-mono font-bold text-text-bright">
+                        {t2.kofiaMargin?.toFixed(1) ?? '--'}<span className="text-xs font-normal ml-0.5">兆韓元</span>
+                      </div>
+                      <span className={`inline-block mt-1 text-[9px] font-bold px-1.5 py-0.5 rounded border ${marginCfg.cls}`}>
+                        {marginCfg.label}
+                      </span>
+                    </div>
+                    <div>
+                      <div className="text-[9px] text-text-dim/50 font-mono uppercase mb-1">外資期現貨合計買賣超</div>
+                      <div className={`text-base font-mono font-bold ${(t2.foreignNetFlow ?? 0) >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                        {(t2.foreignNetFlow ?? 0) >= 0 ? '+' : ''}{t2.foreignNetFlow ?? '--'}<span className="text-xs font-normal ml-0.5">億韓元</span>
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-[9px] text-text-dim/50 font-mono uppercase mb-1">韓國散戶海外槓桿ETF訊號</div>
+                      <div className="text-base font-bold text-text-bright">
+                        {t2.leveragedEtfSignal ?? '--'}
+                      </div>
+                      <div className="text-[9px] text-text-dim/40 font-mono">SOXL/NVDL 極端買超觀察</div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* ── Tier 3：T+10 基本面驗證層 ── */}
+                <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-4">
+                  <div className="text-[10px] font-bold text-emerald-400 uppercase tracking-widest mb-3 flex items-center gap-1.5">
+                    📊 3. 基本面驗證層（T+10 / 月度指標）
+                    <span className={`text-[8px] font-normal normal-case ml-1 flex items-center gap-1 ${
+                      kr?.manualDataStaleness?.level === 'stale' ? 'text-rose-400' :
+                      kr?.manualDataStaleness?.level === 'aging' ? 'text-yellow-400/70' : 'text-text-dim/40'
+                    }`}>
+                      <span className={`w-1.5 h-1.5 rounded-full ${
+                        kr?.manualDataStaleness?.level === 'stale' ? 'bg-rose-400 animate-pulse' :
+                        kr?.manualDataStaleness?.level === 'aging' ? 'bg-yellow-400' : 'bg-emerald-400'
+                      }`} />
+                      · 人工更新
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <div>
+                      <div className="text-[9px] text-text-dim/50 font-mono uppercase mb-1">DRAM / NAND 現貨價趨勢</div>
+                      <div className="text-base font-bold text-text-bright">{t3.dramSpotTrend ?? '--'}</div>
+                    </div>
+                    <div>
+                      <div className="text-[9px] text-text-dim/50 font-mono uppercase mb-1">韓國前10日半導體出口 YoY</div>
+                      <div className={`text-base font-mono font-bold ${(t3.exportSemi10Day ?? 0) >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                        {(t3.exportSemi10Day ?? 0) >= 0 ? '+' : ''}{t3.exportSemi10Day ?? '--'}%
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* 底部說明 */}
+                <div className="mt-4 pt-3 border-t border-border-subtle/20 text-[9px] text-text-dim/40 leading-relaxed font-mono">
+                  三層架構：T-0 資金與對衝層即時反映 KOSPI 開盤前壓力 → T+1 籌碼層驗證是否觸發賣壓 → T+10 基本面確認長期趨勢是否翻轉。
+                  Tier 1（KOSPI/EWY/三星/海力士）為 Yahoo Finance 即時數據；Tier 2、3 因無免費官方 API，由人工每週/每月查詢更新（來源：KOFIA、KRX、韓國關稅廳、DRAMeXchange）。
+                </div>
+              </div>
+            );
+          })()}
+        </motion.div>
+
         {/* ═══ 台指期外資籌碼水位（重構版）═══ */}
         <motion.div
           initial={{ opacity: 0, y: 20 }}
@@ -4293,13 +4645,13 @@ export default function MarketSentiment() {
                     <div className="flex items-center justify-between mb-3">
                       <span className="text-xs font-bold text-text-secondary">台股融資維持率與增減</span>
                       <span className={`text-[10px] px-2 py-0.5 rounded-full font-mono ${
-                        twRatioSource === 'env' 
+                        twRatioSource === 'finmind' || twRatioSource === 'env' 
                           ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 font-bold'
                           : isLive 
                             ? 'bg-sky-500/10 text-sky-400' 
                             : 'bg-orange-500/10 text-orange-400'
                       }`}>
-                        {twRatioSource === 'env' ? '✓ 官方精確值' : isLive ? 'TWSE Live' : 'Fallback'}
+                        {twRatioSource === 'finmind' ? '✓ FinMind 官方' : twRatioSource === 'env' ? '✓ 官方精確值' : isLive ? 'TWSE Live' : 'Fallback'}
                       </span>
                     </div>
 
