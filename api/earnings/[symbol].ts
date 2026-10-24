@@ -1,6 +1,6 @@
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { yahooFinance, formatYFDate } from '../_helpers.js';
+import { yahooFinance, formatYFDate, computeQuarterFCF } from '../_helpers.js';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method === 'OPTIONS') return res.status(200).end();
@@ -9,7 +9,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   try {
     const quote: any = await yahooFinance.quoteSummary(ticker, {
-      modules: ['calendarEvents', 'price', 'earnings', 'financialData', 'defaultKeyStatistics']
+      modules: ['calendarEvents', 'price', 'earnings', 'financialData', 'defaultKeyStatistics', 'cashflowStatementHistoryQuarterly']
     });
     const quarterlyEarnings = quote.earnings?.earningsChart?.quarterly || [];
     const quarterlyFinancials = quote.earnings?.financialsChart?.quarterly || [];
@@ -40,6 +40,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
     const earningsDateStatus = earningsDate ? 'confirmed' : 'unknown';
 
+    // 單季 FCF 與前一季（與批次 /api/earnings 共用同一套邏輯）
+    const fcf = await computeQuarterFCF(ticker, quote);
+
     res.json({
       symbol: ticker,
       name: quote.price?.shortName || ticker,
@@ -64,6 +67,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         margin: quote.financialData?.profitMargins || null,
         growth: quote.financialData?.revenueGrowth || null,
         epsTTM: quote.defaultKeyStatistics?.trailingEps || null,
+        quarterFCF: fcf.quarterFCF,
+        quarterFCFLabel: fcf.quarterFCFLabel,
+        prevQuarterFCF: fcf.prevQuarterFCF,
+        prevQuarterFCFLabel: fcf.prevQuarterFCFLabel,
       }
     });
   } catch (error) {

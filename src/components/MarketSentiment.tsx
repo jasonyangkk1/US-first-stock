@@ -47,6 +47,7 @@ interface EconomicIndicator {
   pendingReleaseTime?: string | null;
   isLive?: boolean;
   isCurated?: boolean;
+  curatedMonthsBehind?: number;
   isStaticFallback?: boolean;
   isStatic?: boolean;
   isPending?: boolean;
@@ -966,10 +967,12 @@ export default function MarketSentiment() {
       // OR 靜態備援有值（這種情況標記為 isStaticFallback）
       isLive:          !!(dynamic?.actual) && dynamic?.dataSource !== 'adp_curated',
       isCurated:       !!(dynamic?.actual) && dynamic?.dataSource === 'adp_curated',
+      curatedMonthsBehind: dynamic?.monthsBehind ?? 0, // Curated 資料過期月數提醒
       isStaticFallback: !dynamic?.actual && !!ind.actual && !!macroData, // macroData 存在但 dynamic 無值時才標記
       isStatic:    !macroData,                             // macroData 整個 null 時才算完全靜態
-      // isPending 只在 macroData 存在、動態無數據、且靜態也無備援時才顯示 TBD
-      isPending:   !!macroData && !dynamic?.actual && !ind.actual,
+      // isPending：只有在「後端明確回報本月尚未發布」時才顯示 TBD，
+      // 不再用 !ind.actual 當作唯一判斷依據（避免瞬間網路抖動被誤判成尚未發布）
+      isPending:   !!macroData && !dynamic?.actual && !ind.actual && !!dynamic?.pendingRelease,
       pendingRelease: dynamic?.pendingRelease ?? false,
       pendingReleaseTime: dynamic?.pendingReleaseTime ?? null,
     };
@@ -2164,9 +2167,13 @@ export default function MarketSentiment() {
                       Live Data
                     </div>
                   ) : indicator.isCurated ? (
-                    <div className="text-[8px] font-bold text-sky-400 bg-sky-500/10 border border-sky-500/20 px-1.5 py-0.5 rounded uppercase flex items-center gap-1 font-mono">
-                      <span className="w-1.5 h-1.5 rounded-full bg-sky-400" />
-                      Curated
+                    <div className={`text-[8px] font-bold px-1.5 py-0.5 rounded uppercase flex items-center gap-1 font-mono border ${
+                      (indicator.curatedMonthsBehind ?? 0) > 1
+                        ? 'text-amber-400 bg-amber-500/10 border-amber-500/20'
+                        : 'text-sky-400 bg-sky-500/10 border-sky-500/20'
+                    }`}>
+                      <span className={`w-1.5 h-1.5 rounded-full ${(indicator.curatedMonthsBehind ?? 0) > 1 ? 'bg-amber-400' : 'bg-sky-400'}`} />
+                      {(indicator.curatedMonthsBehind ?? 0) > 1 ? `Curated · ${indicator.curatedMonthsBehind}月前` : 'Curated'}
                     </div>
                   ) : indicator.isStaticFallback ? (
                     <div className="text-[8px] font-bold text-amber-500 bg-amber-500/10 border border-amber-500/20 px-1.5 py-0.5 rounded uppercase flex items-center gap-1 font-mono">

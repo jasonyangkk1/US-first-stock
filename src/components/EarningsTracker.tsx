@@ -463,11 +463,25 @@ export default function EarningsTracker({ onSelectStock }: { onSelectStock?: (sy
                       </div>
 
                       {/* FCF Comparison 卡片（全寬，顯示當季 vs 前一季 QoQ 對比） */}
-                      {(item.summary?.quarterFCF != null || item.summary?.prevQuarterFCF != null) && (() => {
+                      {item.summary && (() => {
                         const curr     = item.summary?.quarterFCF        ?? null;
                         const prev     = item.summary?.prevQuarterFCF    ?? null;
                         const currLbl  = item.summary?.quarterFCFLabel    ?? 'Last Q';
                         const prevLbl  = item.summary?.prevQuarterFCFLabel ?? 'Prev Q';
+
+                        // 當季與前一季都沒有資料：顯示佔位說明，而不是整張卡片消失
+                        if (curr == null && prev == null) {
+                          return (
+                            <div className="p-4 bg-card-bg border border-border-subtle rounded-xl">
+                              <span className="text-[10px] font-bold text-text-dim uppercase tracking-widest">
+                                FCF Comparison
+                              </span>
+                              <p className="text-[11px] text-text-dim/50 mt-2">
+                                此股票的季度自由現金流資料暫時無法取得（Yahoo Finance 未提供或請求逾時），請稍後重新整理。
+                              </p>
+                            </div>
+                          );
+                        }
 
                         // QoQ 成長率：正值 = FCF 改善，負值 = 惡化
                         const qoqPct = curr != null && prev != null && prev !== 0

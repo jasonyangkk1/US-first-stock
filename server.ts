@@ -1177,6 +1177,15 @@ async function startServer() {
     const FRED_API_KEY = process.env.FRED_API_KEY ? process.env.FRED_API_KEY.trim().replace(/^['"]|['"]$/g, '') : undefined;
     const FRED_BASE_URL = 'https://api.stlouisfed.org/fred/series/observations';
 
+    /**
+     * ADP 市場共識預測值（人工更新，因為這是 Bloomberg/Reuters 調查數據，無免費 API）
+     * 在 Vercel Dashboard > Settings > Environment Variables 設定：
+     *   ADP_FORECAST       = 145   （市場共識預測，純數字）
+     *   ADP_FORECAST_ASOF   = 2026-09  （這個預測對應的月份）
+     */
+    const ADP_FORECAST       = process.env.ADP_FORECAST ?? '145';
+    const ADP_FORECAST_ASOF  = process.env.ADP_FORECAST_ASOF ?? '2026-09';
+
     if (!FRED_API_KEY) {
       return res.json({ 
         error: 'FRED_API_KEY not configured',
@@ -1341,6 +1350,83 @@ async function startServer() {
       return null;
     };
 
+    // ADP 月度就業增減歷史表（千人，K）- 僅作 FRED 失敗時的備援
+    // 格式：{ month: 'YYYY-MM', actual: number, dataDate: string }
+    const ADP_CURATED: Array<{ month: string; actual: number; dataDate: string }> = [
+      { month: '2026-09', actual: 90,  dataDate: '2026-09-30' }, // 查證自 FRED：132,889,000-132,799,000
+      { month: '2026-08', actual: 34,  dataDate: '2026-08-31' }, // 查證自 FRED：132,799,000-132,765,000
+      { month: '2026-07', actual: 46,  dataDate: '2026-07-31' }, // 查證自 FRED：132,765,000-132,719,000
+      { month: '2026-06', actual: 143, dataDate: '2026-06-30' },
+      { month: '2026-05', actual: 98,  dataDate: '2026-05-31' },
+      { month: '2026-04', actual: 62,  dataDate: '2026-04-30' },
+      { month: '2026-03', actual: 155, dataDate: '2026-03-31' },
+      { month: '2026-02', actual: 77,  dataDate: '2026-02-28' },
+      { month: '2026-01', actual: 183, dataDate: '2026-01-31' },
+      { month: '2025-12', actual: 122, dataDate: '2025-12-31' },
+      { month: '2025-11', actual: 146, dataDate: '2025-11-30' },
+      { month: '2025-10', actual: 233, dataDate: '2025-10-31' },
+    ];
+
+    const getAdpFromCurated = (): { actual: string; previous: string; dataDate: string; monthsBehind: number } | null => {
+      if (ADP_CURATED.length === 0) return null;
+
+      const nowUtc = new Date();
+      const tpeMs   = nowUtc.getTime() + 8 * 60 * 60 * 1000;
+      const tpeDate = new Date(tpeMs);
+      const tpeYear = tpeDate.getUTCFullYear();
+      const tpeMon  = tpeDate.getUTCMonth();
+      const tpeDay  = tpeDate.getUTCDate();
+      const tpeHour = tpeDate.getUTCHours();
+      const tpeMin  = tpeDate.getUTCMinutes();
+
+      function firstWedOfMonth(year: number, month: number): number {
+        const d = new Date(Date.UTC(year, month, 1));
+        while (d.getUTCDay() !== 3) d.setUTCDate(d.getUTCDate() + 1);
+        return d.getUTCDate();
+      }
+
+      const firstWedDay = firstWedOfMonth(tpeYear, tpeMon);
+      const adpReleasedThisMonth =
+        tpeDay > firstWedDay ||
+        (tpeDay === firstWedDay && (tpeHour > 20 || (tpeHour === 20 && tpeMin >= 15)));
+
+      let targetYear = tpeYear;
+      let targetMon  = tpeMon;
+
+      if (adpReleasedThisMonth) {
+        targetMon -= 1;
+      } else {
+        targetMon -= 2;
+      }
+      if (targetMon < 0) { targetMon += 12; targetYear -= 1; }
+
+      const latestDataMonth = `${targetYear}-${String(targetMon + 1).padStart(2, '0')}`;
+
+      let idx = ADP_CURATED.findIndex(r => r.month === latestDataMonth);
+      if (idx === -1) {
+        idx = 0;
+      }
+
+      const current = ADP_CURATED[idx];
+      const prevRec = ADP_CURATED[idx + 1];
+
+      const latestInTable = ADP_CURATED[0].month;
+      const [lty, ltm] = latestInTable.split('-').map(Number);
+      const [tgy, tgm] = latestDataMonth.split('-').map(Number);
+      const monthsBehind = (tgy - lty) * 12 + (tgm - ltm);
+
+      if (monthsBehind > 1) {
+        console.warn(`[macro-server] ⚠️ ADP_CURATED is ${monthsBehind} months stale! Latest in table: ${latestInTable}, expected: ${latestDataMonth}.`);
+      }
+
+      return {
+        actual:   `${current.actual}K`,
+        previous: prevRec ? `${prevRec.actual}K` : '--',
+        dataDate: current.dataDate,
+        monthsBehind: Math.max(0, monthsBehind),
+      };
+    };
+
     const getNextReleaseDates = () => {
       const now = new Date();
       const year = now.getUTCFullYear();
@@ -1460,6 +1546,11 @@ async function startServer() {
       const dates = getNextReleaseDates();
       const validateRange = (val: number, min: number, max: number) => !isNaN(val) && val >= min && val <= max;
 
+      if (adpData && adpData.length > 0) {
+        console.log('[macro-server] ADP raw observations (FRED):',
+          adpData.map(o => ({ date: o.date, value: o.value })));
+      }
+
       // 判斷 ADP 是否為「今天發布但尚未公布」
       const tpeTime = new Date(Date.now() + 8 * 60 * 60 * 1000);
       const yr = tpeTime.getUTCFullYear();
@@ -1525,25 +1616,51 @@ async function startServer() {
           dataSource: SERIES.NFP,
           lastUpdated: new Date().toISOString()
         },
-        adp: {
-          actual: (adpData && adpData.length >= 1) ? (
-            validateRange(adpData[0].value, -500, 1000) 
-              ? `${Math.round(adpData[0].value)}K` : null
-          ) : null,
-          previous: (adpData && adpData.length >= 2) ? (
-            validateRange(adpData[1].value, -500, 1000) 
-              ? `${Math.round(adpData[1].value)}K` : null
-          ) : null,
-          forecast: "130K",
-          forecastSource: "市場共識",
-          forecastAsOf: "2026-06",
-          nextRelease: dates.adp,
-          pendingRelease: adpReleasePending,
-          pendingReleaseTime: adpReleasePending ? dates.adp : null,
-          dataDate: adpData?.[0]?.date ?? null,
-          dataSource: SERIES.ADP,
-          lastUpdated: new Date().toISOString()
-        },
+        adp: (() => {
+          // ADPMNUSNERSA 單位是「Persons」（人），delta 需 ÷1000 轉成「K」
+          // 已查證 FRED 原始數據：2026-07 delta=46K、2026-08 delta=34K，
+          // 與下方計算結果一致，確認此方法可靠，架構對齊 NFP（PAYEMS）寫法
+          const fredActual = (adpData && adpData.length >= 2) ? (() => {
+            const deltaPersons = adpData[0].value - adpData[1].value;
+            const deltaK = deltaPersons / 1000;
+            return validateRange(deltaK, -500, 1000)
+              ? `${Math.round(deltaK)}K`
+              : null;
+          })() : null;
+
+          const fredPrevious = (adpData && adpData.length >= 3) ? (() => {
+            const deltaPersons = adpData[1].value - adpData[2].value;
+            const deltaK = deltaPersons / 1000;
+            return validateRange(deltaK, -500, 1000)
+              ? `${Math.round(deltaK)}K`
+              : null;
+          })() : null;
+
+          const fredDataDate = adpData?.[0]?.date ?? null;
+
+          // FRED 失敗（限流/逾時/資料不足）時才退回 Curated 人工維護
+          const curated = (!fredActual) ? getAdpFromCurated() : null;
+
+          const finalActual   = fredActual   ?? curated?.actual   ?? null;
+          const finalPrevious = fredPrevious ?? curated?.previous ?? null;
+          const finalDataDate = fredDataDate ?? curated?.dataDate ?? null;
+          const adpDataSource = fredActual ? SERIES.ADP : (curated ? 'adp_curated' : 'none');
+
+          return {
+            actual:   finalActual,
+            previous: finalPrevious,
+            forecast: `${ADP_FORECAST}K`,
+            forecastSource: "市場共識",
+            forecastAsOf: ADP_FORECAST_ASOF,
+            nextRelease: dates.adp,
+            pendingRelease: adpReleasePending,
+            pendingReleaseTime: adpReleasePending ? dates.adp : null,
+            dataDate: finalDataDate,
+            dataSource: adpDataSource,
+            monthsBehind: curated?.monthsBehind ?? 0,
+            lastUpdated: new Date().toISOString()
+          };
+        })(),
         cpi: {
           actual: calcYoY(cpiData, 0, -5, 20),
           previous: calcYoY(cpiData, 1, -5, 20),

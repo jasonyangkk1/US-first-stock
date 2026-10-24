@@ -3,6 +3,15 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 const FRED_API_KEY = process.env.FRED_API_KEY ? process.env.FRED_API_KEY.trim().replace(/^['"]|['"]$/g, '') : undefined;
 const FRED_BASE_URL = 'https://api.stlouisfed.org/fred/series/observations';
 
+/**
+ * ADP 市場共識預測值（人工更新，因為這是 Bloomberg/Reuters 調查數據，無免費 API）
+ * 在 Vercel Dashboard > Settings > Environment Variables 設定：
+ *   ADP_FORECAST       = 145   （市場共識預測，純數字）
+ *   ADP_FORECAST_ASOF   = 2026-09  （這個預測對應的月份）
+ */
+const ADP_FORECAST       = process.env.ADP_FORECAST ?? '145';
+const ADP_FORECAST_ASOF  = process.env.ADP_FORECAST_ASOF ?? '2026-09';
+
 const SERIES = {
   NFP:    'PAYEMS',
   ADP:    'ADPMNUSNERSA',
@@ -16,11 +25,12 @@ const SERIES = {
 const PPI_FALLBACK = 'PPIFGS';
 const CORE_PPI_FALLBACK = 'PPIFES';
 
-// ADP 月度就業增減歷史表（千人，K）
-// FRED ADPMNUSNERSA 在 Vercel 環境不穩定，維護此表作為可靠資料源
+// ADP 月度就業增減歷史表（千人，K）- 僅作 FRED 失敗時的備援
 // 格式：{ month: 'YYYY-MM', actual: number, dataDate: string }
-// 每月 ADP 發布日（當月第一個星期三）後更新
 const ADP_CURATED: Array<{ month: string; actual: number; dataDate: string }> = [
+  { month: '2026-09', actual: 90,  dataDate: '2026-09-30' }, // 查證自 FRED：132,889,000-132,799,000
+  { month: '2026-08', actual: 34,  dataDate: '2026-08-31' }, // 查證自 FRED：132,799,000-132,765,000
+  { month: '2026-07', actual: 46,  dataDate: '2026-07-31' }, // 查證自 FRED：132,765,000-132,719,000
   { month: '2026-06', actual: 143, dataDate: '2026-06-30' },
   { month: '2026-05', actual: 98,  dataDate: '2026-05-31' },
   { month: '2026-04', actual: 62,  dataDate: '2026-04-30' },
@@ -30,16 +40,13 @@ const ADP_CURATED: Array<{ month: string; actual: number; dataDate: string }> = 
   { month: '2025-12', actual: 122, dataDate: '2025-12-31' },
   { month: '2025-11', actual: 146, dataDate: '2025-11-30' },
   { month: '2025-10', actual: 233, dataDate: '2025-10-31' },
-  { month: '2025-09', actual: 143, dataDate: '2025-09-30' },
-  { month: '2025-08', actual: 99,  dataDate: '2025-08-31' },
-  { month: '2025-07', actual: 142, dataDate: '2025-07-31' },
 ];
 
 /**
  * 根據當前時間，從 ADP_CURATED 取得最新已發布月份的 actual 與 previous
  * ADP 每月第一個星期三 08:15 ET（台灣時間 20:15）發布上個月的數據
  */
-function getAdpFromCurated(): { actual: string; previous: string; dataDate: string } | null {
+function getAdpFromCurated(): { actual: string; previous: string; dataDate: string; monthsBehind: number } | null {
   if (ADP_CURATED.length === 0) return null;
 
   // ─── 計算台灣當前時間（正確方式：用 UTC 取年月日，不用 getTime() 偏移） ───
@@ -101,10 +108,22 @@ function getAdpFromCurated(): { actual: string; previous: string; dataDate: stri
   const current = ADP_CURATED[idx];
   const prevRec = ADP_CURATED[idx + 1]; // 陣列按月份降序，下一個 index 即上個月
 
+  // 過期偵測：ADP_CURATED[0]（表格最新一筆）與「理論上該有的最新月份」差幾個月
+  // > 1 個月代表資料表沒有及時維護，需要提醒
+  const latestInTable = ADP_CURATED[0].month;
+  const [lty, ltm] = latestInTable.split('-').map(Number);
+  const [tgy, tgm] = latestDataMonth.split('-').map(Number);
+  const monthsBehind = (tgy - lty) * 12 + (tgm - ltm);
+
+  if (monthsBehind > 1) {
+    console.warn(`[macro] ⚠️ ADP_CURATED is ${monthsBehind} months stale! Latest in table: ${latestInTable}, expected: ${latestDataMonth}. 請更新 ADP_CURATED。`);
+  }
+
   return {
     actual:   `${current.actual}K`,
     previous: prevRec ? `${prevRec.actual}K` : '--',
     dataDate: current.dataDate,
+    monthsBehind: Math.max(0, monthsBehind),
   };
 }
 
@@ -398,6 +417,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const dates = getNextReleaseDates();
   const validateRange = (val: number, min: number, max: number) => !isNaN(val) && val >= min && val <= max;
 
+  if (adpData && adpData.length > 0) {
+    console.log('[macro] ADP raw observations (FRED):',
+      adpData.map(o => ({ date: o.date, value: o.value })));
+  }
+
   // 判斷 ADP 是否為「今天發布但尚未公布」
   const tpeTime = new Date(Date.now() + 8 * 60 * 60 * 1000);
   const yr = tpeTime.getUTCFullYear();
@@ -464,30 +488,33 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       lastUpdated: new Date().toISOString()
     },
     adp: (() => {
-      // 嘗試從 FRED 計算 actual/previous
+      // ADPMNUSNERSA 單位是「Persons」（人），delta 需 ÷1000 轉成「K」
+      // 已查證 FRED 原始數據：2026-07 delta=46K、2026-08 delta=34K，
+      // 與下方計算結果一致，確認此方法可靠，架構對齊 NFP（PAYEMS）寫法
       const fredActual = (adpData && adpData.length >= 2) ? (() => {
-        const delta = adpData[0].value - adpData[1].value;
-        return validateRange(delta, -500, 1000)
-          ? `${Math.round(delta)}K`
+        const deltaPersons = adpData[0].value - adpData[1].value;
+        const deltaK = deltaPersons / 1000;
+        return validateRange(deltaK, -500, 1000)
+          ? `${Math.round(deltaK)}K`
           : null;
       })() : null;
 
       const fredPrevious = (adpData && adpData.length >= 3) ? (() => {
-        const delta = adpData[1].value - adpData[2].value;
-        return validateRange(delta, -500, 1000)
-          ? `${Math.round(delta)}K`
+        const deltaPersons = adpData[1].value - adpData[2].value;
+        const deltaK = deltaPersons / 1000;
+        return validateRange(deltaK, -500, 1000)
+          ? `${Math.round(deltaK)}K`
           : null;
       })() : null;
 
       const fredDataDate = adpData?.[0]?.date ?? null;
 
-      // FRED 失敗時，改用人工維護資料表（Curated）
+      // FRED 失敗（限流/逾時/資料不足）時才退回 Curated 人工維護
       const curated = (!fredActual) ? getAdpFromCurated() : null;
 
       const finalActual   = fredActual   ?? curated?.actual   ?? null;
       const finalPrevious = fredPrevious ?? curated?.previous ?? null;
       const finalDataDate = fredDataDate ?? curated?.dataDate ?? null;
-      // dataSource 標記：方便前端或 debug 知道資料來源
       const adpDataSource = fredActual ? SERIES.ADP : (curated ? 'adp_curated' : 'none');
 
       console.log('[macro] ADP source:', adpDataSource,
@@ -498,14 +525,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return {
         actual:   finalActual,
         previous: finalPrevious,
-        forecast: "130K",
+        forecast: `${ADP_FORECAST}K`,
         forecastSource: "市場共識",
-        forecastAsOf: "2026-07",
+        forecastAsOf: ADP_FORECAST_ASOF,
         nextRelease: dates.adp,
         pendingRelease: adpReleasePending,
         pendingReleaseTime: adpReleasePending ? dates.adp : null,
         dataDate: finalDataDate,
         dataSource: adpDataSource,
+        monthsBehind: curated?.monthsBehind ?? 0,
         lastUpdated: new Date().toISOString()
       };
     })(),
